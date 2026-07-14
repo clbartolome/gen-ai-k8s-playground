@@ -3,7 +3,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request
 
 app = Flask(__name__)
 
@@ -28,6 +28,11 @@ def utc_now() -> str:
 def snapshot() -> dict:
     with state_lock:
         return dict(last_run)
+
+
+@app.get("/")
+def root():
+    return redirect("/debug")
 
 
 @app.get("/debug")

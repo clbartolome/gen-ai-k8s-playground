@@ -1,0 +1,13 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: chat
+  labels:
+    app.kubernetes.io/name: chat
+    app.kubernetes.io/component: chat
+spec:
+  to:
+    kind: Service
+    name: chat
+  port:
+    targetPort: http
