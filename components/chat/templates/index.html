@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gen AI Playground · Chat</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=6">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <span class="topbar-title">Gen AI Playground</span>
+      <span class="topbar-tag">Chat</span>
+    </header>
+
+    <header class="page-header">
+      <h1>Chat</h1>
+      <p>Conversation with the agent</p>
+    </header>
+
+    <main id="messages" class="panel thread" aria-live="polite">
+      <div class="thread-empty">
+        Send a message to start the conversation.
+      </div>
+    </main>
+
+    <form id="chat-form" class="composer">
+      <input
+        id="message"
+        name="message"
+        type="text"
+        placeholder="Type a message..."
+        autocomplete="off"
+        autofocus
+        required
+      >
+      <button id="send-btn" type="submit">Send</button>
+    </form>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}?v=3"></script>
+</body>
+</html>

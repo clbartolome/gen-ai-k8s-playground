@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gen AI Playground · Agent</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=6">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <span class="topbar-title">Gen AI Playground</span>
+      <span class="topbar-tag">Agent</span>
+    </header>
+
+    <header class="page-header">
+      <div class="page-header-row">
+        <div>
+          <h1>Agent</h1>
+          <p id="hint">Runtime monitor</p>
+        </div>
+        <span id="status-badge" class="badge badge-idle">idle</span>
+      </div>
+    </header>
+
+    <section class="dashboard">
+      <div class="stat-row">
+        <div class="stat-panel">
+          <span class="stat-label">Duration</span>
+          <span id="duration" class="stat-value">—</span>
+        </div>
+        <div class="stat-panel">
+          <span class="stat-label">Started</span>
+          <span id="started-at" class="stat-value">—</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">Received message</div>
+        <p id="message" class="panel-content">No requests yet.</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">Response</div>
+        <p id="response" class="panel-content muted">—</p>
+      </div>
+
+      <p id="error" class="error-banner" hidden></p>
+    </section>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}?v=8"></script>
+</body>
+</html>
