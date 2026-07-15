@@ -15,8 +15,8 @@ CHAT_QUAY_IMAGE := $(QUAY_REGISTRY)/$(QUAY_USER)/$(PROJECT)-chat:$(QUAY_TAG)
 
 AGENT_PORT ?= 8080
 CHAT_PORT ?= 5000
-DELAY_SECONDS ?= 5
 AGENT_TIMEOUT ?= 120
+ENV_FILE := .env
 
 .PHONY: local-build local-run local-clean quay-login quay-upload openshift-deploy openshift-delete
 
@@ -25,10 +25,11 @@ local-build:
 	$(PODMAN) build -t $(CHAT_IMAGE) -f components/chat/Containerfile components/chat
 
 local-run:
+	@test -f $(ENV_FILE) || (echo "Missing $(ENV_FILE). Copy .env.example to .env and fill in your values." && exit 1)
 	@$(PODMAN) network exists $(NETWORK) || $(PODMAN) network create $(NETWORK)
 	-$(PODMAN) rm -f $(CHAT_CONTAINER) $(AGENT_CONTAINER)
 	$(PODMAN) run -d --name $(AGENT_CONTAINER) --network $(NETWORK) \
-		-p $(AGENT_PORT):8080 -e DELAY_SECONDS=$(DELAY_SECONDS) $(AGENT_IMAGE)
+		-p $(AGENT_PORT):8080 --env-file $(ENV_FILE) $(AGENT_IMAGE)
 	$(PODMAN) run -d --name $(CHAT_CONTAINER) --network $(NETWORK) \
 		-p $(CHAT_PORT):5000 \
 		-e AGENT_URL=http://$(AGENT_CONTAINER):8080 \

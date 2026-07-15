@@ -23,7 +23,7 @@ Done
 
 Next (workloads)
 ----------------
-- [ ] Makefile target openshift-deploy / openshift-delete (oc apply -k)
+- [ ] LLM config for OpenShift (Secret + env in deployment) when needed
 - [ ] ConfigMap for agent DELAY_SECONDS (demo tuning without rebuild)
 - [ ] Resource requests/limits tuned for your cluster
 - [ ] PodDisruptionBudget if you run >1 replica
