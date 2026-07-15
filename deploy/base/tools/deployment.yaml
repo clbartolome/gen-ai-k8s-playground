@@ -1,49 +1,46 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: agent
+  name: tools
   labels:
-    app.kubernetes.io/name: agent
-    app.kubernetes.io/component: agent
+    app.kubernetes.io/name: tools
+    app.kubernetes.io/component: tools
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: agent
+      app.kubernetes.io/name: tools
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: agent
-        app.kubernetes.io/component: agent
+        app.kubernetes.io/name: tools
+        app.kubernetes.io/component: tools
     spec:
       securityContext:
         hostUsers: false
       containers:
-        - name: agent
-          image: gen-ai-k8s-playground-agent:local
+        - name: tools
+          image: gen-ai-k8s-playground-tools:local
           imagePullPolicy: Always
           ports:
-            - name: http
-              containerPort: 8080
-          env:
-            - name: DELAY_SECONDS
-              value: "0"
-            - name: MCP_URL
-              value: http://tools:9001
-            - name: ITSM_URL
-              value: http://tools:9002
-            - name: RAG_URL
-              value: http://tools:9003
+            - name: hub
+              containerPort: 9000
+            - name: mcp
+              containerPort: 9001
+            - name: itsm
+              containerPort: 9002
+            - name: rag
+              containerPort: 9003
           readinessProbe:
             httpGet:
-              path: /debug/status
-              port: http
+              path: /health
+              port: hub
             initialDelaySeconds: 3
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /debug/status
-              port: http
+              path: /health
+              port: hub
             initialDelaySeconds: 10
             periodSeconds: 20
           securityContext:

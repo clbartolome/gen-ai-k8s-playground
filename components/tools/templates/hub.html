@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gen AI Playground · Tools</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=1">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <span class="topbar-title">Gen AI Playground</span>
+      <span class="topbar-tag">Tools</span>
+    </header>
+
+    <header class="page-header">
+      <h1>Tools</h1>
+      <p>Platform ops demo — MCP, ITSM and RAG on separate ports</p>
+    </header>
+
+    <section class="dashboard">
+      <div class="services">
+        <article class="service-card">
+          <div class="service-head">
+            <h2>MCP</h2>
+            <span class="port">:{{ mcp_port }}</span>
+          </div>
+          <p>Platform state — health, events, alerts</p>
+          <code>GET /tools</code>
+          <code>POST /tools/&lt;name&gt;/invoke</code>
+        </article>
+
+        <article class="service-card">
+          <div class="service-head">
+            <h2>ITSM</h2>
+            <span class="port">:{{ itsm_port }}</span>
+          </div>
+          <p>Tickets and changes for the playground</p>
+          <code>GET /tickets</code>
+          <code>POST /tickets</code>
+        </article>
+
+        <article class="service-card">
+          <div class="service-head">
+            <h2>RAG</h2>
+            <span class="port">:{{ rag_port }}</span>
+          </div>
+          <p>Runbooks and procedures (keyword search)</p>
+          <code>GET /documents</code>
+          <code>POST /search</code>
+        </article>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">Recent activity</div>
+        <div id="activity" class="activity-grid">
+          <p class="muted">Waiting for API calls...</p>
+        </div>
+      </div>
+
+      <div class="panel demo-hint">
+        <div class="panel-header">Demo scenario</div>
+        <p class="panel-content">
+          Chat is degraded (high latency). INC-1042 is open.
+          Ask the agent: <em>"The chat is slow, what's going on and what should I do?"</em>
+          — it should use MCP + ITSM + RAG.
+        </p>
+      </div>
+    </section>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}?v=1"></script>
+</body>
+</html>

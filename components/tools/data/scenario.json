@@ -1,0 +1,105 @@
+{
+  "services": {
+    "chat": {
+      "status": "degraded",
+      "latency_ms": 2400,
+      "cpu_pct": 85,
+      "restarts": 2,
+      "summary": "High response latency and elevated CPU"
+    },
+    "agent": {
+      "status": "healthy",
+      "latency_ms": 320,
+      "cpu_pct": 42,
+      "restarts": 0,
+      "summary": "Processing requests normally"
+    },
+    "tools": {
+      "status": "healthy",
+      "latency_ms": 45,
+      "cpu_pct": 18,
+      "restarts": 0,
+      "summary": "All tool APIs responding"
+    }
+  },
+  "events": [
+    {
+      "component": "chat",
+      "type": "Warning",
+      "message": "Response time above 2s threshold",
+      "minutes_ago": 12
+    },
+    {
+      "component": "chat",
+      "type": "Normal",
+      "message": "Pod restarted after OOMKilled",
+      "minutes_ago": 45
+    },
+    {
+      "component": "agent",
+      "type": "Normal",
+      "message": "LLM call completed in 1.8s",
+      "minutes_ago": 3
+    }
+  ],
+  "alerts": [
+    {
+      "id": "ALT-101",
+      "component": "chat",
+      "severity": "high",
+      "message": "Chat p95 latency > 2s"
+    },
+    {
+      "id": "ALT-102",
+      "component": "agent",
+      "severity": "low",
+      "message": "LLM timeout near limit on 2 requests"
+    }
+  ],
+  "tickets": [
+    {
+      "id": "INC-1042",
+      "title": "Chat response time degraded",
+      "component": "chat",
+      "severity": "high",
+      "status": "in_progress",
+      "description": "Users report slow chat responses. Correlates with high CPU on chat pod."
+    },
+    {
+      "id": "INC-1038",
+      "title": "Agent LLM timeout spikes",
+      "component": "agent",
+      "severity": "medium",
+      "status": "open",
+      "description": "Intermittent LLM timeouts observed in agent debug monitor."
+    },
+    {
+      "id": "CHG-2001",
+      "title": "Deploy agent v2",
+      "component": "agent",
+      "severity": "low",
+      "status": "scheduled",
+      "description": "Planned deployment window this weekend."
+    }
+  ],
+  "documents": [
+    {
+      "id": "doc-chat-slow",
+      "title": "Troubleshooting: chat response slow",
+      "tags": ["chat", "slow", "latency", "troubleshooting"],
+      "content": "1. Check chat pod CPU and memory in the playground namespace.\n2. Verify agent health and LLM latency — slow agent calls block chat jobs.\n3. Review open ITSM tickets for INC-1042.\n4. If latency stays above 2s for 10 minutes, escalate to P1."
+    },
+    {
+      "id": "doc-agent-restart",
+      "title": "Procedure: safe agent restart",
+      "tags": ["agent", "restart", "maintenance"],
+      "content": "1. Confirm no critical changes are in progress (check ITSM).\n2. Scale agent to 0, wait 30s, scale back to 1.\n3. Validate /debug shows healthy LLM calls.\n4. Run a test message from chat before closing the change."
+    },
+    {
+      "id": "doc-escalation",
+      "title": "Escalation policy P1",
+      "tags": ["escalation", "p1", "incident"],
+      "content": "Open a P1 when user-facing chat is unavailable or latency exceeds 5s for 10+ minutes.\nNotify on-call platform team and link the active ITSM incident."
+    }
+  ]
+}

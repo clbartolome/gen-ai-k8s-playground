@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: tools
+  labels:
+    app.kubernetes.io/name: tools
+    app.kubernetes.io/component: tools
+spec:
+  selector:
+    app.kubernetes.io/name: tools
+  ports:
+    - name: hub
+      port: 9000
+      targetPort: hub
+    - name: mcp
+      port: 9001
+      targetPort: mcp
+    - name: itsm
+      port: 9002
+      targetPort: itsm
+    - name: rag
+      port: 9003
+      targetPort: rag

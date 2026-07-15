@@ -2,7 +2,8 @@ FROM registry.access.redhat.com/ubi9/python-311:latest
 
 WORKDIR /app
 
-COPY requirements.txt *.py .
+COPY requirements.txt main.py common.py hub_app.py mcp_app.py itsm_app.py rag_app.py .
+COPY data data
 COPY static static
 COPY templates templates
 
@@ -11,8 +12,12 @@ RUN pip install --no-cache-dir -r requirements.txt && \
     chown -R 1001:0 /app && \
     chmod -R g=u /app
 
-ENV PORT=8080
-EXPOSE 8080
+ENV HUB_PORT=9000
+ENV MCP_PORT=9001
+ENV ITSM_PORT=9002
+ENV RAG_PORT=9003
+
+EXPOSE 9000 9001 9002 9003
 
 USER 1001
 

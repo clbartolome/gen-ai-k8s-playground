@@ -7,6 +7,7 @@ resources:
   - namespace.yaml
   - agent
   - chat
+  - tools
 
 commonLabels:
   app.kubernetes.io/part-of: gen-ai-playground
