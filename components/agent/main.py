@@ -1,6 +1,6 @@
 import os
 
-from flask import Flask, jsonify, redirect, render_template, request
+from flask import Flask, jsonify, request
 
 from config import load_settings
 from itsm import ITSMClient
@@ -8,37 +8,24 @@ from llm import LLMClient
 from mcp import MCPClient
 from orchestrator import AgentOrchestrator
 from rag import RAGClient
-from state import RunMonitor
+from reporter import EventReporter
 
 settings = load_settings()
-monitor = RunMonitor()
 orchestrator = AgentOrchestrator(
     settings=settings,
     llm=LLMClient(settings),
     mcp=MCPClient(settings),
     itsm=ITSMClient(settings),
     rag=RAGClient(settings),
-    monitor=monitor,
+    reporter=EventReporter(settings),
 )
 
 app = Flask(__name__)
 
 
-@app.get("/")
-def root():
-    return redirect("/debug")
-
-
-@app.get("/debug")
-def debug_page():
-    return render_template("debug.html")
-
-
-@app.get("/debug/status")
-def debug_status():
-    resp = jsonify(monitor.snapshot(settings))
-    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
-    return resp
+@app.get("/health")
+def health():
+    return jsonify({"status": "ok", "service": "agent"})
 
 
 @app.post("/message")

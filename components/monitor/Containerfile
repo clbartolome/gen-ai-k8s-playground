@@ -2,15 +2,17 @@ FROM registry.access.redhat.com/ubi9/python-311:latest
 
 WORKDIR /app
 
-COPY requirements.txt *.py .
+COPY requirements.txt main.py store.py flow.py .
+COPY static static
+COPY templates templates
 
 USER 0
 RUN pip install --no-cache-dir -r requirements.txt && \
     chown -R 1001:0 /app && \
     chmod -R g=u /app
 
-ENV PORT=8080
-EXPOSE 8080
+ENV PORT=9010
+EXPOSE 9010
 
 USER 1001
 

@@ -5,7 +5,7 @@ from itsm import ITSMClient
 from llm import LLMClient
 from mcp import MCPClient
 from rag import RAGClient
-from state import RunMonitor
+from reporter import EventReporter, summarize
 
 
 class AgentOrchestrator:
@@ -18,14 +18,14 @@ class AgentOrchestrator:
         mcp: MCPClient,
         itsm: ITSMClient,
         rag: RAGClient,
-        monitor: RunMonitor,
+        reporter: EventReporter,
     ) -> None:
         self._settings = settings
         self._llm = llm
         self._mcp = mcp
         self._itsm = itsm
         self._rag = rag
-        self._monitor = monitor
+        self._reporter = reporter
 
     def build_system_prompt(self) -> str:
         return (
@@ -41,27 +41,39 @@ class AgentOrchestrator:
 
     def run(self, user_message: str) -> str:
         """Handle one user message. Tool iteration will be added here."""
-        start = self._monitor.begin(user_message)
+        start = self._reporter.begin(user_message)
+        messages = self.build_messages(user_message)
 
         try:
             if self._settings.delay_seconds > 0:
-                self._monitor.set_step("delay")
+                self._reporter.set_step("delay")
                 time.sleep(self._settings.delay_seconds)
 
-            llm_start = self._monitor.begin_llm()
+            llm_start = self._reporter.begin_llm(
+                phase="respond",
+                summary="Generating response…",
+                detail={
+                    "messages": messages,
+                    "model": self._settings.llm_model,
+                },
+            )
             try:
-                response = self._llm.chat(self.build_messages(user_message))
+                response = self._llm.chat(messages)
             except Exception:
-                self._monitor.fail_llm()
                 raise
 
             llm_duration_ms = round((time.perf_counter() - llm_start) * 1000)
             duration_ms = round((time.perf_counter() - start) * 1000)
 
-            self._monitor.complete_llm(response, llm_duration_ms)
-            self._monitor.complete(response, duration_ms)
+            self._reporter.complete_llm(
+                response,
+                llm_duration_ms,
+                summary=summarize(response),
+                detail={"messages": messages},
+            )
+            self._reporter.complete(response, duration_ms)
             return response
         except Exception as exc:
             duration_ms = round((time.perf_counter() - start) * 1000)
-            self._monitor.fail(str(exc), duration_ms)
+            self._reporter.fail(str(exc), duration_ms)
             raise

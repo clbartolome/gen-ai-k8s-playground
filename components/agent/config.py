@@ -13,6 +13,8 @@ class Settings:
     itsm_url: str
     rag_url: str
     tools_timeout: float
+    monitor_url: str
+    monitor_timeout: float
 
 
 def load_settings() -> Settings:
@@ -26,4 +28,6 @@ def load_settings() -> Settings:
         itsm_url=os.environ.get("ITSM_URL", "http://localhost:9002"),
         rag_url=os.environ.get("RAG_URL", "http://localhost:9003"),
         tools_timeout=float(os.environ.get("TOOLS_TIMEOUT", "30")),
+        monitor_url=os.environ.get("MONITOR_URL", "http://localhost:9010"),
+        monitor_timeout=float(os.environ.get("MONITOR_TIMEOUT", "5")),
     )

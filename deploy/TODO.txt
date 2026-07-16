@@ -18,7 +18,7 @@ Labels
 
 Done
 ----
-- [x] deploy/base — agent, chat, tools, namespace (each: Deployment, Service, Route)
+- [x] deploy/base — agent, chat, tools, monitor, namespace (each: Deployment, Service; monitor + chat + tools: Route)
 - [x] deploy/overlays/openshift — Quay images
 
 Next (workloads)

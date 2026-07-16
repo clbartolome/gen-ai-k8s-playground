@@ -8,6 +8,7 @@ resources:
   - agent
   - chat
   - tools
+  - monitor
 
 commonLabels:
   app.kubernetes.io/part-of: gen-ai-playground

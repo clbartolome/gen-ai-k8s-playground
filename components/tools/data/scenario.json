@@ -71,7 +71,7 @@
       "component": "agent",
       "severity": "medium",
       "status": "open",
-      "description": "Intermittent LLM timeouts observed in agent debug monitor."
+      "description": "Intermittent LLM timeouts observed in agent monitor."
     },
     {
       "id": "CHG-2001",
@@ -93,7 +93,7 @@
       "id": "doc-agent-restart",
       "title": "Procedure: safe agent restart",
       "tags": ["agent", "restart", "maintenance"],
-      "content": "1. Confirm no critical changes are in progress (check ITSM).\n2. Scale agent to 0, wait 30s, scale back to 1.\n3. Validate /debug shows healthy LLM calls.\n4. Run a test message from chat before closing the change."
+      "content": "1. Confirm no critical changes are in progress (check ITSM).\n2. Scale agent to 0, wait 30s, scale back to 1.\n3. Validate monitor shows healthy LLM calls.\n4. Run a test message from chat before closing the change."
     },
     {
       "id": "doc-escalation",
