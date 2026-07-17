@@ -23,11 +23,13 @@ class EventStore:
         event_type: str,
         data: dict | None = None,
         at: str | None = None,
+        seq: int | None = None,
     ) -> None:
         timestamp = at or utc_now()
         event = {
             "type": event_type,
             "at": timestamp,
+            "seq": seq or 0,
             "data": data or {},
         }
 
@@ -100,7 +102,7 @@ class EventStore:
         }
 
     def _serialize_run(self, run: dict) -> dict:
-        events = list(run["events"])
+        events = sorted(run["events"], key=lambda event: event.get("seq", 0))
         return {
             "run_id": run["run_id"],
             "status": run["status"],

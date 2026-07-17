@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Gen AI Playground · Monitor</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=2">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=4">
 </head>
 <body>
   <main class="stage">
@@ -30,11 +30,12 @@
       </section>
       <section class="modal-section">
         <h3>Detail</h3>
-        <pre id="modal-json" class="modal-json"></pre>
+        <div id="modal-fields" class="modal-fields"></div>
+        <pre id="modal-json" class="modal-json" hidden></pre>
       </section>
     </div>
   </dialog>
 
-  <script src="{{ url_for('static', filename='app.js') }}?v=2"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v=5"></script>
 </body>
 </html>

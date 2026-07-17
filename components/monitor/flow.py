@@ -41,13 +41,42 @@ def build_flow(events: list[dict]) -> list[dict]:
             )
             continue
 
+        if event_type == "thought":
+            is_final = bool(data.get("is_final"))
+            thought_text = data.get("thought") or data.get("summary", "")
+            if is_final and data.get("final_answer"):
+                summary = truncate(data.get("final_answer"), 120)
+            else:
+                summary = truncate(thought_text, 120)
+            detail = {
+                "response": data.get("response"),
+                "thought": data.get("thought"),
+                "action": data.get("action"),
+                "action_input": data.get("action_input"),
+                "final_answer": data.get("final_answer"),
+                "is_final": is_final,
+            }
+            cards.append(
+                {
+                    "id": step_id,
+                    "kind": "thought",
+                    "status": "done",
+                    "title": "Final" if is_final else "Thought",
+                    "summary": summary,
+                    "detail": detail,
+                    "at": at,
+                }
+            )
+            continue
+
         if event_type == "llm_started":
             phase = data.get("phase", "llm")
+            label = data.get("label") or phase
             card = {
                 "id": step_id,
                 "kind": "llm",
                 "status": "active",
-                "title": f"LLM · {phase}",
+                "title": label,
                 "summary": data.get("summary") or "Calling LLM…",
                 "detail": data.get("detail") or data,
                 "at": at,
@@ -81,12 +110,17 @@ def build_flow(events: list[dict]) -> list[dict]:
 
         if event_type == "tool_started":
             tool = data.get("tool", "tool")
+            title = "RAG" if tool == "rag" else _tool_title(tool, data.get("action"))
+            if tool == "rag":
+                summary = data.get("summary") or "Consulting knowledge base…"
+            else:
+                summary = data.get("summary") or f"Calling {tool.upper()}…"
             card = {
                 "id": step_id,
                 "kind": tool,
                 "status": "active",
-                "title": _tool_title(tool, data.get("action")),
-                "summary": data.get("summary") or f"Calling {tool.upper()}…",
+                "title": title,
+                "summary": summary,
                 "detail": data.get("detail") or data,
                 "at": at,
             }
@@ -98,10 +132,11 @@ def build_flow(events: list[dict]) -> list[dict]:
             card = open_steps.get(step_id)
             if card is None:
                 tool = data.get("tool", "tool")
+                title = "RAG" if tool == "rag" else _tool_title(tool, data.get("action"))
                 card = {
                     "id": step_id,
                     "kind": tool,
-                    "title": _tool_title(tool, data.get("action")),
+                    "title": title,
                     "summary": "",
                     "detail": {},
                     "at": at,

@@ -29,41 +29,54 @@ class EventReporter:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._run_id: str | None = None
+        self._seq = 0
         self._llm_start: float | None = None
         self._llm_step_id: str | None = None
+        self._llm_phase: str = "react"
         self._tool_step_id: str | None = None
 
-    def _emit(self, event_type: str, data: dict | None = None) -> None:
-        if not self._settings.monitor_url or not self._run_id:
+    def _send(self, payload: dict, *, sync: bool = False) -> None:
+        if not self._settings.monitor_url:
             return
-
-        payload = json.dumps(
-            {
-                "run_id": self._run_id,
-                "type": event_type,
-                "at": utc_now(),
-                "data": data or {},
-            }
-        ).encode("utf-8")
 
         url = f"{self._settings.monitor_url.rstrip('/')}/events"
         req = urllib.request.Request(
             url,
-            data=payload,
+            data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
 
-        def send() -> None:
+        def deliver() -> None:
             try:
                 urllib.request.urlopen(req, timeout=self._settings.monitor_timeout)
             except (urllib.error.URLError, TimeoutError):
                 pass
 
-        threading.Thread(target=send, daemon=True).start()
+        if sync:
+            deliver()
+        else:
+            threading.Thread(target=deliver, daemon=True).start()
+
+    def _emit(self, event_type: str, data: dict | None = None, *, sync: bool = False) -> None:
+        if not self._run_id:
+            return
+
+        self._seq += 1
+        self._send(
+            {
+                "run_id": self._run_id,
+                "type": event_type,
+                "at": utc_now(),
+                "seq": self._seq,
+                "data": data or {},
+            },
+            sync=sync,
+        )
 
     def begin(self, message: str) -> float:
         self._run_id = str(uuid.uuid4())
+        self._seq = 0
         self._emit(
             "run_started",
             {
@@ -71,26 +84,57 @@ class EventReporter:
                 "message": message,
                 "message_chars": len(message),
             },
+            sync=True,
         )
         return time.perf_counter()
 
     def set_step(self, step: str) -> None:
         self._emit("step_changed", {"step": step})
 
+    def thought(
+        self,
+        text: str,
+        *,
+        action: str | None = None,
+        action_input: dict | None = None,
+        raw_response: str | None = None,
+        is_final: bool = False,
+        final_answer: str | None = None,
+        iteration: int = 0,
+    ) -> None:
+        self._emit(
+            "thought",
+            {
+                "step_id": str(uuid.uuid4()),
+                "thought": text,
+                "action": action,
+                "action_input": action_input or None,
+                "response": raw_response,
+                "is_final": is_final,
+                "final_answer": final_answer,
+                "summary": summarize(final_answer if is_final and final_answer else text),
+                "iteration": iteration,
+            },
+            sync=True,
+        )
+
     def begin_llm(
         self,
         *,
         phase: str = "respond",
+        label: str | None = None,
         summary: str = "Calling LLM…",
         detail: dict | None = None,
     ) -> float:
         self._llm_start = time.perf_counter()
         self._llm_step_id = str(uuid.uuid4())
+        self._llm_phase = phase
         self._emit(
             "llm_started",
             {
                 "step_id": self._llm_step_id,
                 "phase": phase,
+                "label": label or phase,
                 "summary": summary,
                 "model": self._settings.llm_model or None,
                 "endpoint": LLMClient.endpoint_for(self._settings.llm_url),
@@ -111,7 +155,7 @@ class EventReporter:
             "llm_done",
             {
                 "step_id": self._llm_step_id,
-                "phase": "respond",
+                "phase": self._llm_phase,
                 "duration_ms": llm_duration_ms,
                 "response_chars": len(response),
                 "summary": summary or summarize(response),
@@ -121,6 +165,7 @@ class EventReporter:
                     "duration_ms": llm_duration_ms,
                 },
             },
+            sync=True,
         )
         self._llm_step_id = None
 
@@ -136,6 +181,7 @@ class EventReporter:
                 "summary": "LLM call failed",
                 "detail": {"error": error, "duration_ms": llm_duration_ms},
             },
+            sync=True,
         )
         self._llm_step_id = None
         return llm_duration_ms
@@ -200,6 +246,7 @@ class EventReporter:
                 "response_chars": len(response),
                 "summary": summarize(response),
             },
+            sync=True,
         )
 
     def fail(self, error: str, duration_ms: int) -> None:
@@ -212,4 +259,5 @@ class EventReporter:
                 "duration_ms": duration_ms,
                 "summary": summarize(error),
             },
+            sync=True,
         )

@@ -203,6 +203,9 @@ body {
 }
 
 .kind-user .flow-card-kind { color: var(--blue); }
+.kind-thought .flow-card-kind { color: #58d1eb; }
+.kind-thought .flow-card-title,
+.flow-card.kind-thought[data-final="true"] .flow-card-title { color: var(--green); }
 .kind-llm .flow-card-kind { color: var(--accent); }
 .kind-mcp .flow-card-kind { color: var(--purple); }
 .kind-itsm .flow-card-kind { color: var(--yellow); }
@@ -329,6 +332,35 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 36vh;
+  overflow: auto;
+}
+
+.modal-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.detail-field h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.detail-field-value {
+  margin: 0;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 24vh;
   overflow: auto;
 }
 

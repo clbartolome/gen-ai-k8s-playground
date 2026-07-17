@@ -81,25 +81,6 @@
       "status": "scheduled",
       "description": "Planned deployment window this weekend."
     }
-  ],
-  "documents": [
-    {
-      "id": "doc-chat-slow",
-      "title": "Troubleshooting: chat response slow",
-      "tags": ["chat", "slow", "latency", "troubleshooting"],
-      "content": "1. Check chat pod CPU and memory in the playground namespace.\n2. Verify agent health and LLM latency — slow agent calls block chat jobs.\n3. Review open ITSM tickets for INC-1042.\n4. If latency stays above 2s for 10 minutes, escalate to P1."
-    },
-    {
-      "id": "doc-agent-restart",
-      "title": "Procedure: safe agent restart",
-      "tags": ["agent", "restart", "maintenance"],
-      "content": "1. Confirm no critical changes are in progress (check ITSM).\n2. Scale agent to 0, wait 30s, scale back to 1.\n3. Validate monitor shows healthy LLM calls.\n4. Run a test message from chat before closing the change."
-    },
-    {
-      "id": "doc-escalation",
-      "title": "Escalation policy P1",
-      "tags": ["escalation", "p1", "incident"],
-      "content": "Open a P1 when user-facing chat is unavailable or latency exceeds 5s for 10+ minutes.\nNotify on-call platform team and link the active ITSM incident."
-    }
   ]
 }
+

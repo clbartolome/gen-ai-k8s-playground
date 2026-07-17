@@ -5,6 +5,7 @@ const modalKind = document.getElementById("modal-kind");
 const modalTitle = document.getElementById("modal-title");
 const modalMeta = document.getElementById("modal-meta");
 const modalSummary = document.getElementById("modal-summary");
+const modalFields = document.getElementById("modal-fields");
 const modalJson = document.getElementById("modal-json");
 const modalClose = document.getElementById("modal-close");
 
@@ -30,6 +31,73 @@ function escapeHtml(text) {
     .replaceAll('"', "&quot;");
 }
 
+function formatJson(value) {
+  if (value == null) return "—";
+  if (typeof value === "string") return value;
+  return JSON.stringify(value, null, 2);
+}
+
+function fieldBlock(label, value) {
+  if (value == null || value === "") return "";
+  const content =
+    typeof value === "string" ? escapeHtml(value) : escapeHtml(formatJson(value));
+  return `
+    <div class="detail-field">
+      <h4>${escapeHtml(label)}</h4>
+      <pre class="detail-field-value">${content}</pre>
+    </div>
+  `;
+}
+
+function renderDetailFields(card) {
+  const detail = card.detail || {};
+  const parts = [];
+
+  if (card.kind === "thought") {
+    if (detail.is_final) {
+      parts.push(fieldBlock("Thought", detail.thought));
+      parts.push(fieldBlock("Action", detail.action));
+      parts.push(fieldBlock("Action Input", detail.action_input));
+      parts.push(fieldBlock("Final answer", detail.final_answer));
+    } else {
+      parts.push(fieldBlock("Response", detail.response));
+    }
+  } else if (card.kind === "rag") {
+    parts.push(fieldBlock("Request", detail.request));
+    parts.push(fieldBlock("Response", detail.response));
+  } else if (card.kind === "llm") {
+    const prompts = detail.prompts || {};
+    if (prompts.user || prompts.system) {
+      parts.push(fieldBlock("User", prompts.user));
+      parts.push(fieldBlock("System", prompts.system));
+    } else if (detail.messages) {
+      const userMsgs = detail.messages
+        .filter((m) => m.role === "user")
+        .map((m) => m.content)
+        .join("\n\n");
+      const systemMsgs = detail.messages
+        .filter((m) => m.role === "system")
+        .map((m) => m.content)
+        .join("\n\n");
+      parts.push(fieldBlock("User", userMsgs));
+      parts.push(fieldBlock("System", systemMsgs));
+    }
+  } else if (detail.request || detail.response) {
+    parts.push(fieldBlock("Request", detail.request));
+    parts.push(fieldBlock("Response", detail.response));
+  }
+
+  if (parts.length) {
+    modalFields.innerHTML = parts.join("");
+    modalJson.hidden = true;
+    return;
+  }
+
+  modalFields.innerHTML = "";
+  modalJson.hidden = false;
+  modalJson.textContent = JSON.stringify(detail, null, 2);
+}
+
 function renderCard(card) {
   const article = document.createElement("article");
   const isActive = card.status === "active";
@@ -42,6 +110,9 @@ function renderCard(card) {
     .filter(Boolean)
     .join(" ");
   article.dataset.cardId = card.id;
+  if (card.kind === "thought" && card.detail?.is_final) {
+    article.dataset.final = "true";
+  }
   article.innerHTML = `
     <div class="flow-card-head">
       <span class="flow-card-kind">${escapeHtml(card.kind)}</span>
@@ -60,7 +131,7 @@ function openDetail(card) {
   modalTitle.textContent = card.title;
   modalMeta.textContent = `${formatTime(card.at)} · ${card.status}`;
   modalSummary.textContent = card.summary || "—";
-  modalJson.textContent = JSON.stringify(card.detail || {}, null, 2);
+  renderDetailFields(card);
   modalBackdrop.hidden = false;
   detailModal.showModal();
   renderFlow(window.__lastFlow || []);

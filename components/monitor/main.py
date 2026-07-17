@@ -32,6 +32,7 @@ def ingest_event():
         event_type=event_type,
         data=body.get("data"),
         at=body.get("at"),
+        seq=body.get("seq"),
     )
     return jsonify({"ok": True}), 202
 

@@ -15,6 +15,7 @@ class Settings:
     tools_timeout: float
     monitor_url: str
     monitor_timeout: float
+    max_react_iterations: int
 
 
 def load_settings() -> Settings:
@@ -30,4 +31,5 @@ def load_settings() -> Settings:
         tools_timeout=float(os.environ.get("TOOLS_TIMEOUT", "30")),
         monitor_url=os.environ.get("MONITOR_URL", "http://localhost:9010"),
         monitor_timeout=float(os.environ.get("MONITOR_TIMEOUT", "5")),
+        max_react_iterations=int(os.environ.get("MAX_REACT_ITERATIONS", "5")),
     )
