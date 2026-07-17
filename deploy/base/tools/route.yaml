@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/name: tools
     app.kubernetes.io/component: tools
   annotations:
-    openshift.io/description: "Tools hub UI; MCP/ITSM/RAG APIs are cluster-internal on ports 9001-9003"
+    openshift.io/description: "Tools hub UI; platform MCP API on port 9001 (ITSM/KB via itsm-app)"
 spec:
   to:
     kind: Service

@@ -1,5 +1,8 @@
 from config import Settings
 from http_util import request_json
+import logging
+
+log = logging.getLogger("agent.llm")
 
 
 class LLMClient:
@@ -25,9 +28,11 @@ class LLMClient:
         if not self._settings.llm_model:
             raise RuntimeError("LLM_MODEL must be set")
 
+        endpoint = self.endpoint
+        log.debug("LLM POST %s model=%s", endpoint, self._settings.llm_model)
         data = request_json(
             "POST",
-            self.endpoint,
+            endpoint,
             body={"model": self._settings.llm_model, "messages": messages},
             headers={"Authorization": f"Bearer {self._settings.llm_api_key}"},
             timeout=self._settings.llm_timeout,
@@ -36,4 +41,5 @@ class LLMClient:
         try:
             return data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
+            log.error("Unexpected LLM response keys=%s", list(data) if isinstance(data, dict) else type(data))
             raise RuntimeError(f"Unexpected LLM response: {data}") from exc

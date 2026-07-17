@@ -2,8 +2,6 @@ const activityEl = document.getElementById("activity");
 
 const SERVICE_LABELS = {
   mcp: "MCP",
-  itsm: "ITSM",
-  rag: "RAG",
 };
 
 function renderEntry(entry) {
@@ -26,7 +24,7 @@ function renderColumn(name, entries) {
 
 function render(data) {
   const activity = data.activity || {};
-  activityEl.innerHTML = ["mcp", "itsm", "rag"]
+  activityEl.innerHTML = ["mcp"]
     .map((name) => renderColumn(name, activity[name] || []))
     .join("");
 }

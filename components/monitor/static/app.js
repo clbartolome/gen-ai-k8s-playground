@@ -62,7 +62,10 @@ function renderDetailFields(card) {
     } else {
       parts.push(fieldBlock("Response", detail.response));
     }
-  } else if (card.kind === "rag") {
+  } else if (card.kind === "kb" || card.kind === "rag") {
+    parts.push(fieldBlock("Request", detail.request));
+    parts.push(fieldBlock("Response", detail.response));
+  } else if (card.kind === "itsm") {
     parts.push(fieldBlock("Request", detail.request));
     parts.push(fieldBlock("Response", detail.response));
   } else if (card.kind === "llm") {

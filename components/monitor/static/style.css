@@ -209,7 +209,9 @@ body {
 .kind-llm .flow-card-kind { color: var(--accent); }
 .kind-mcp .flow-card-kind { color: var(--purple); }
 .kind-itsm .flow-card-kind { color: var(--yellow); }
+.kind-kb .flow-card-kind,
 .kind-rag .flow-card-kind { color: var(--green); }
+.kind-kb .flow-card-title { color: var(--green); }
 .kind-result .flow-card-kind { color: var(--green); }
 .kind-error .flow-card-kind { color: var(--red); }
 

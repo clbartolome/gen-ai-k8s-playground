@@ -27,10 +27,6 @@ spec:
               containerPort: 9000
             - name: mcp
               containerPort: 9001
-            - name: itsm
-              containerPort: 9002
-            - name: rag
-              containerPort: 9003
           readinessProbe:
             httpGet:
               path: /health

@@ -20,9 +20,10 @@ Done
 ----
 - [x] deploy/base — agent, chat, tools, monitor, namespace (each: Deployment, Service; monitor + chat + tools: Route)
 - [x] deploy/overlays/openshift — Quay images
-- [x] deploy/itsm — ITSM + KB/RAG + MCP; make deploy-itsm / delete-itsm
+- [x] deploy/itsm — ITSM + KB via itsm-app MCP; make deploy-itsm / delete-itsm
               Image: quay.io/rhn_support_rafsanch/itsm-app:aiops-1.0.0 (deploy only)
-              Same namespace gen-ai-playground; not yet in openshift overlay
+              Same namespace gen-ai-playground; agent uses ITSM_MCP_URL + token
+- [x] Removed demo Flask ITSM/RAG from components/tools (platform MCP only)
 
 Next (workloads)
 ----------------

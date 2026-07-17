@@ -30,10 +30,13 @@ spec:
               value: "0"
             - name: MCP_URL
               value: http://tools:9001
-            - name: ITSM_URL
-              value: http://tools:9002
-            - name: RAG_URL
-              value: http://tools:9003
+            - name: ITSM_MCP_URL
+              value: http://itsm-app:8000/mcp/
+            - name: ITSM_MCP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: itsm-secrets
+                  key: mcp-token
             - name: MONITOR_URL
               value: http://monitor:9010
           readinessProbe:

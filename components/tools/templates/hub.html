@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Gen AI Playground · Tools</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=1">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=2">
 </head>
 <body>
   <div class="app">
@@ -15,7 +15,7 @@
 
     <header class="page-header">
       <h1>Tools</h1>
-      <p>Platform ops demo — MCP, ITSM and RAG on separate ports</p>
+      <p>Platform MCP (AAP / health). ITSM + Knowledge Base live in itsm-app MCP.</p>
     </header>
 
     <section class="dashboard">
@@ -25,29 +25,9 @@
             <h2>MCP</h2>
             <span class="port">:{{ mcp_port }}</span>
           </div>
-          <p>Platform state — health, events, alerts</p>
+          <p>Platform state — health, events, alerts, AAP workflows</p>
           <code>GET /tools</code>
           <code>POST /tools/&lt;name&gt;/invoke</code>
-        </article>
-
-        <article class="service-card">
-          <div class="service-head">
-            <h2>ITSM</h2>
-            <span class="port">:{{ itsm_port }}</span>
-          </div>
-          <p>Tickets and changes for the playground</p>
-          <code>GET /tickets</code>
-          <code>POST /tickets</code>
-        </article>
-
-        <article class="service-card">
-          <div class="service-head">
-            <h2>RAG</h2>
-            <span class="port">:{{ rag_port }}</span>
-          </div>
-          <p>Runbooks and procedures (keyword search)</p>
-          <code>GET /documents</code>
-          <code>POST /search</code>
         </article>
       </div>
 
@@ -57,18 +37,9 @@
           <p class="muted">Waiting for API calls...</p>
         </div>
       </div>
-
-      <div class="panel demo-hint">
-        <div class="panel-header">Demo scenario</div>
-        <p class="panel-content">
-          Chat is degraded (high latency). INC-1042 is open.
-          Ask the agent: <em>"The chat is slow, what's going on and what should I do?"</em>
-          — it should use MCP + ITSM + RAG.
-        </p>
-      </div>
     </section>
   </div>
 
-  <script src="{{ url_for('static', filename='app.js') }}?v=1"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v=2"></script>
 </body>
 </html>

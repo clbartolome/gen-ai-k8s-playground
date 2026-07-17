@@ -11,8 +11,15 @@ def truncate(text: str, max_len: int = 100) -> str:
 
 
 def _tool_title(tool: str, action: str | None = None) -> str:
-    labels = {"mcp": "MCP", "itsm": "ITSM", "rag": "RAG"}
+    labels = {
+        "mcp": "MCP",
+        "itsm": "ITSM",
+        "kb": "Knowledge Base",
+        "rag": "Knowledge Base",
+    }
     name = labels.get(tool, tool.upper())
+    if tool in {"kb", "rag"}:
+        return name
     return f"{name} · {action}" if action else name
 
 
@@ -110,14 +117,16 @@ def build_flow(events: list[dict]) -> list[dict]:
 
         if event_type == "tool_started":
             tool = data.get("tool", "tool")
-            title = "RAG" if tool == "rag" else _tool_title(tool, data.get("action"))
-            if tool == "rag":
-                summary = data.get("summary") or "Consulting knowledge base…"
+            title = _tool_title(tool, data.get("action"))
+            if tool in {"kb", "rag"}:
+                summary = data.get("summary") or "Searching knowledge base articles…"
+            elif tool == "itsm":
+                summary = data.get("summary") or f"Calling ITSM…"
             else:
                 summary = data.get("summary") or f"Calling {tool.upper()}…"
             card = {
                 "id": step_id,
-                "kind": tool,
+                "kind": "kb" if tool == "rag" else tool,
                 "status": "active",
                 "title": title,
                 "summary": summary,
@@ -132,10 +141,10 @@ def build_flow(events: list[dict]) -> list[dict]:
             card = open_steps.get(step_id)
             if card is None:
                 tool = data.get("tool", "tool")
-                title = "RAG" if tool == "rag" else _tool_title(tool, data.get("action"))
+                title = _tool_title(tool, data.get("action"))
                 card = {
                     "id": step_id,
-                    "kind": tool,
+                    "kind": "kb" if tool == "rag" else tool,
                     "title": title,
                     "summary": "",
                     "detail": {},

@@ -1,7 +1,32 @@
 import json
+import os
+import ssl
 import urllib.error
 import urllib.request
 from typing import Any
+
+_UNVERIFIED_SSL: ssl.SSLContext | None = None
+
+
+def ssl_context_for(url: str) -> ssl.SSLContext | None:
+    """Return an SSL context for HTTPS. Verification off unless SSL_VERIFY=true."""
+    if not url.lower().startswith("https://"):
+        return None
+    verify = os.environ.get("SSL_VERIFY", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if verify:
+        return None  # urllib default verification
+    global _UNVERIFIED_SSL
+    if _UNVERIFIED_SSL is None:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        _UNVERIFIED_SSL = ctx
+    return _UNVERIFIED_SSL
 
 
 def request_json(
@@ -19,9 +44,10 @@ def request_json(
         req_headers.setdefault("Content-Type", "application/json")
 
     req = urllib.request.Request(url, data=payload, headers=req_headers, method=method)
+    context = ssl_context_for(url)
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:

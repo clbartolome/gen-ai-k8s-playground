@@ -15,9 +15,3 @@ spec:
     - name: mcp
       port: 9001
       targetPort: mcp
-    - name: itsm
-      port: 9002
-      targetPort: itsm
-    - name: rag
-      port: 9003
-      targetPort: rag

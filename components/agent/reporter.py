@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 
 from config import Settings
+from http_util import ssl_context_for
 from llm import LLMClient
 
 
@@ -49,7 +50,11 @@ class EventReporter:
 
         def deliver() -> None:
             try:
-                urllib.request.urlopen(req, timeout=self._settings.monitor_timeout)
+                urllib.request.urlopen(
+                    req,
+                    timeout=self._settings.monitor_timeout,
+                    context=ssl_context_for(url),
+                )
             except (urllib.error.URLError, TimeoutError):
                 pass
 

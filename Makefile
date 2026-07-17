@@ -39,15 +39,13 @@ local-run:
 	@$(PODMAN) network exists $(NETWORK) || $(PODMAN) network create $(NETWORK)
 	-$(PODMAN) rm -f $(CHAT_CONTAINER) $(AGENT_CONTAINER) $(TOOLS_CONTAINER) $(MONITOR_CONTAINER)
 	$(PODMAN) run -d --name $(TOOLS_CONTAINER) --network $(NETWORK) \
-		-p $(TOOLS_PORT):9000 -p 9001:9001 -p 9002:9002 -p 9003:9003 \
+		-p $(TOOLS_PORT):9000 -p 9001:9001 \
 		$(TOOLS_IMAGE)
 	$(PODMAN) run -d --name $(MONITOR_CONTAINER) --network $(NETWORK) \
 		-p $(MONITOR_PORT):9010 $(MONITOR_IMAGE)
 	$(PODMAN) run -d --name $(AGENT_CONTAINER) --network $(NETWORK) \
 		-p $(AGENT_PORT):8080 --env-file $(ENV_FILE) \
 		-e MCP_URL=http://$(TOOLS_CONTAINER):9001 \
-		-e ITSM_URL=http://$(TOOLS_CONTAINER):9002 \
-		-e RAG_URL=http://$(TOOLS_CONTAINER):9003 \
 		-e MONITOR_URL=http://$(MONITOR_CONTAINER):9010 \
 		$(AGENT_IMAGE)
 	$(PODMAN) run -d --name $(CHAT_CONTAINER) --network $(NETWORK) \
@@ -107,8 +105,7 @@ deploy-itsm:
 	$(OC) apply -k $(ITSM_KUSTOMIZE)
 	@echo ""
 	@echo "ITSM in namespace: gen-ai-playground"
-	@echo "  UI login: admin / admin  (change secret itsm-secrets)"
-	@echo "  MCP:      https://<route>/mcp/  (header X-ITSM-MCP-Token from secret)"
+	@echo "  MCP:      https://<route>/mcp/  (X-ITSM-MCP-Token / Bearer from itsm-secrets)"
 	@echo ""
 	@$(OC) get route -n gen-ai-playground itsm-app -o custom-columns=NAME:.metadata.name,URL:.spec.host --no-headers 2>/dev/null || true
 	@$(OC) get pods -n gen-ai-playground -l app.kubernetes.io/name=itsm-app 2>/dev/null || true

@@ -10,24 +10,14 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 state_lock = threading.Lock()
 activity: dict[str, deque] = {
     "mcp": deque(maxlen=8),
-    "itsm": deque(maxlen=8),
-    "rag": deque(maxlen=8),
 }
 
-_tickets: list[dict] | None = None
 _request_starts: dict[int, float] = {}
 
 
 def load_scenario() -> dict:
     with open(DATA_DIR / "scenario.json", encoding="utf-8") as fh:
         return json.load(fh)
-
-
-def get_tickets() -> list[dict]:
-    global _tickets
-    if _tickets is None:
-        _tickets = [dict(ticket) for ticket in load_scenario()["tickets"]]
-    return _tickets
 
 
 def install_request_logging(app, service: str) -> None:
@@ -62,6 +52,8 @@ def record_activity(
         "at": time.strftime("%H:%M:%S", time.gmtime()),
     }
     with state_lock:
+        if service not in activity:
+            activity[service] = deque(maxlen=8)
         activity[service].appendleft(entry)
 
 

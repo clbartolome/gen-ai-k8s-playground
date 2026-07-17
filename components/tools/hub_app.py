@@ -4,8 +4,6 @@ from common import activity_snapshot, port
 
 HUB_PORT = port("hub", 9000)
 MCP_PORT = port("mcp", 9001)
-ITSM_PORT = port("itsm", 9002)
-RAG_PORT = port("rag", 9003)
 
 
 def create_app() -> Flask:
@@ -20,8 +18,6 @@ def create_app() -> Flask:
         return render_template(
             "hub.html",
             mcp_port=MCP_PORT,
-            itsm_port=ITSM_PORT,
-            rag_port=RAG_PORT,
         )
 
     @app.get("/status")
@@ -31,8 +27,6 @@ def create_app() -> Flask:
                 "ports": {
                     "hub": HUB_PORT,
                     "mcp": MCP_PORT,
-                    "itsm": ITSM_PORT,
-                    "rag": RAG_PORT,
                 },
                 "activity": activity_snapshot(),
             }
