@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: gen-ai-playground
+
+resources:
+  - namespace.yaml
+  - secret.yaml
+  - deployment.yaml
+  - service.yaml
+  - route.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: gen-ai-playground
+  demo: gen-ai-k8s-playground
+
+# Published image from zaskan/itsm-app (ITSM + KB/RAG + MCP).
+images:
+  - name: itsm-app
+    newName: quay.io/rhn_support_rafsanch/itsm-app
+    newTag: aiops-1.0.0

@@ -26,7 +26,7 @@ MONITOR_PORT ?= 9010
 AGENT_TIMEOUT ?= 120
 ENV_FILE := .env
 
-.PHONY: local-build local-run local-clean quay-login quay-upload openshift-deploy openshift-delete
+.PHONY: local-build local-run local-clean quay-login quay-upload openshift-deploy openshift-delete deploy-itsm delete-itsm
 
 local-build:
 	$(PODMAN) build -t $(AGENT_IMAGE) -f components/agent/Containerfile components/agent
@@ -88,6 +88,7 @@ quay-upload: local-build quay-login
 
 OC ?= oc
 KUSTOMIZE_OVERLAY := deploy/overlays/openshift
+ITSM_KUSTOMIZE := deploy/itsm
 
 openshift-deploy:
 	$(OC) apply -k $(KUSTOMIZE_OVERLAY)
@@ -100,3 +101,17 @@ openshift-deploy:
 
 openshift-delete:
 	$(OC) delete -k $(KUSTOMIZE_OVERLAY) --ignore-not-found
+
+# ITSM app (UI + REST + MCP). Same namespace as the playground. Image in kustomization.yaml
+deploy-itsm:
+	$(OC) apply -k $(ITSM_KUSTOMIZE)
+	@echo ""
+	@echo "ITSM in namespace: gen-ai-playground"
+	@echo "  UI login: admin / admin  (change secret itsm-secrets)"
+	@echo "  MCP:      https://<route>/mcp/  (header X-ITSM-MCP-Token from secret)"
+	@echo ""
+	@$(OC) get route -n gen-ai-playground itsm-app -o custom-columns=NAME:.metadata.name,URL:.spec.host --no-headers 2>/dev/null || true
+	@$(OC) get pods -n gen-ai-playground -l app.kubernetes.io/name=itsm-app 2>/dev/null || true
+
+delete-itsm:
+	$(OC) delete -k $(ITSM_KUSTOMIZE) --ignore-not-found
