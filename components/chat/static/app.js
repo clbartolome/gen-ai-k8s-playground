@@ -3,12 +3,15 @@ const messageInput = document.getElementById("message");
 const sendBtn = document.getElementById("send-btn");
 const messagesEl = document.getElementById("messages");
 
+/** Prior turns sent to the agent (excludes the current user message). */
+const conversationHistory = [];
+
 function scrollToBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function clearEmptyState() {
-  const empty = messagesEl.querySelector(".messages-empty");
+  const empty = messagesEl.querySelector(".thread-empty");
   if (empty) empty.remove();
 }
 
@@ -20,7 +23,10 @@ function addBubble(role, text, extraClass = "") {
 
   const meta = document.createElement("span");
   meta.className = "bubble-meta";
-  meta.textContent = role === "user" ? "You" : role === "agent" ? "Agent" : "Error";
+  if (role === "user") meta.textContent = "You";
+  else if (role === "agent") meta.textContent = "Agent";
+  else if (role === "thought") meta.textContent = "Thinking";
+  else meta.textContent = "Error";
   bubble.appendChild(meta);
 
   const body = document.createElement("span");
@@ -32,28 +38,18 @@ function addBubble(role, text, extraClass = "") {
   return bubble;
 }
 
-function addWaitingBubble() {
-  clearEmptyState();
-
-  const bubble = document.createElement("div");
-  bubble.className = "bubble-waiting";
-  bubble.innerHTML = `
-    Agent is thinking
-    <span class="dots" aria-hidden="true">
-      <span></span><span></span><span></span>
-    </span>
-  `;
-  messagesEl.appendChild(bubble);
-  scrollToBottom();
-  return bubble;
-}
-
-async function pollJob(jobId) {
+async function pollJob(jobId, onThoughts) {
+  let seen = 0;
   while (true) {
     const res = await fetch(`/jobs/${jobId}`);
     const data = await res.json();
+    const thoughts = data.thoughts || [];
+    if (thoughts.length > seen) {
+      onThoughts(thoughts.slice(seen));
+      seen = thoughts.length;
+    }
     if (data.status === "pending") {
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 400));
       continue;
     }
     return data;
@@ -69,27 +65,32 @@ form.addEventListener("submit", async (event) => {
   addBubble("user", message);
   messageInput.value = "";
 
-  const waitingBubble = addWaitingBubble();
+  const historyPayload = conversationHistory.map((turn) => ({ ...turn }));
 
   try {
     const startRes = await fetch("/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, history: historyPayload }),
     });
     const startData = await startRes.json();
     if (!startRes.ok) throw new Error(startData.error || "Could not start request");
 
-    const result = await pollJob(startData.job_id);
-    waitingBubble.remove();
+    const result = await pollJob(startData.job_id, (newThoughts) => {
+      newThoughts.forEach((item) => {
+        const text = typeof item === "string" ? item : item.text;
+        if (text) addBubble("thought", text);
+      });
+    });
 
     if (result.status === "error") {
       addBubble("error", result.error);
     } else {
       addBubble("agent", result.response);
+      conversationHistory.push({ role: "user", content: message });
+      conversationHistory.push({ role: "assistant", content: result.response });
     }
   } catch (err) {
-    waitingBubble.remove();
     addBubble("error", err.message);
   } finally {
     sendBtn.disabled = false;

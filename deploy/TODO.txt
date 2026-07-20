@@ -18,7 +18,8 @@ Labels
 
 Done
 ----
-- [x] deploy/base — agent, chat, tools, monitor, namespace (each: Deployment, Service; monitor + chat + tools: Route)
+- [x] deploy/base — agent, chat, tools, namespace (each: Deployment, Service; chat + tools: Route)
+- [x] Thoughts shown in chat (monitor removed)
 - [x] deploy/overlays/openshift — Quay images
 - [x] deploy/itsm — ITSM + KB via itsm-app MCP; make deploy-itsm / delete-itsm
               Image: quay.io/rhn_support_rafsanch/itsm-app:aiops-1.0.0 (deploy only)

@@ -43,7 +43,58 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "create_vm",
+        "description": (
+            "Run the AAP create_vm workflow to provision a virtual machine. "
+            "Requires an ITSM ticket id and VM parameters."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string", "description": "ITSM ticket / incident ref"},
+                "name": {"type": "string", "description": "Requested VM hostname"},
+                "size": {
+                    "type": "string",
+                    "enum": ["small", "medium", "large"],
+                    "description": "VM size profile",
+                },
+                "network": {"type": "string", "description": "Network / zone"},
+                "environment": {
+                    "type": "string",
+                    "enum": ["dev", "test", "prod"],
+                },
+                "owner": {"type": "string", "description": "Owner contact"},
+            },
+            "required": ["ticket_id", "name", "size", "network", "environment", "owner"],
+        },
+    },
+    {
+        "name": "delete_vm",
+        "description": (
+            "Run the AAP delete_vm workflow to decommission a virtual machine. "
+            "Requires an ITSM ticket id and the VM hostname."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string", "description": "ITSM ticket / incident ref"},
+                "hostname": {"type": "string", "description": "VM hostname to delete"},
+                "environment": {
+                    "type": "string",
+                    "enum": ["dev", "test", "prod"],
+                },
+                "reason": {"type": "string"},
+            },
+            "required": ["ticket_id", "hostname"],
+        },
+    },
 ]
+
+
+def _fake_ip(name: str) -> str:
+    seed = sum(ord(c) for c in name) % 200 + 20
+    return f"10.42.{seed % 50}.{seed}"
 
 
 def create_app() -> Flask:
@@ -82,6 +133,47 @@ def create_app() -> Flask:
             if component:
                 alerts = [a for a in alerts if a["component"] == component]
             return jsonify({"alerts": alerts})
+
+        if name == "create_vm":
+            missing = [
+                key
+                for key in ("ticket_id", "name", "size", "network", "environment", "owner")
+                if not body.get(key)
+            ]
+            if missing:
+                return jsonify({"error": "missing_fields", "fields": missing}), 400
+            hostname = str(body["name"]).strip().lower().replace(" ", "-")
+            return jsonify(
+                {
+                    "status": "succeeded",
+                    "workflow": "create_vm",
+                    "ticket_id": body["ticket_id"],
+                    "hostname": hostname,
+                    "ip": _fake_ip(hostname),
+                    "size": body["size"],
+                    "network": body["network"],
+                    "environment": body["environment"],
+                    "owner": body["owner"],
+                    "message": f"VM {hostname} provisioned successfully",
+                }
+            )
+
+        if name == "delete_vm":
+            missing = [key for key in ("ticket_id", "hostname") if not body.get(key)]
+            if missing:
+                return jsonify({"error": "missing_fields", "fields": missing}), 400
+            hostname = str(body["hostname"]).strip()
+            return jsonify(
+                {
+                    "status": "succeeded",
+                    "workflow": "delete_vm",
+                    "ticket_id": body["ticket_id"],
+                    "hostname": hostname,
+                    "environment": body.get("environment"),
+                    "reason": body.get("reason"),
+                    "message": f"VM {hostname} deleted successfully",
+                }
+            )
 
         return jsonify({"error": f"Unknown tool: {name}"}), 404
 

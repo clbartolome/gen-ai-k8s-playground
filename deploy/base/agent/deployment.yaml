@@ -37,8 +37,6 @@ spec:
                 secretKeyRef:
                   name: itsm-secrets
                   key: mcp-token
-            - name: MONITOR_URL
-              value: http://monitor:9010
           readinessProbe:
             httpGet:
               path: /health

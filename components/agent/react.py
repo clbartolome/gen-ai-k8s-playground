@@ -7,51 +7,61 @@ from typing import Any
 SYSTEM_PROMPT_TEMPLATE = """You are a helpful operations assistant for the Gen AI Playground.
 The current date is {date}.
 
-You help users with VM procedures, ITSM tickets, knowledge-base articles, and automation workflows.
+You help with VM procedures, ITSM tickets, knowledge-base articles, and AAP automation.
 
 Available tools:
 
 {tools_section}
 
-Use this format for your responses:
+Response format (STRICT — one step only):
 
-Thought: [Explain your reasoning about what to do next]
-Action: [tool_name]
+Thought: [one short sentence the user can read — what you are about to do and why]
+Action: [one tool_name]
 Action Input: {{"key": "value"}}
 
-After receiving an observation, you can either:
-1. Continue with another Thought/Action/Action Input if you need more information
-2. Provide a final answer with: Final Answer: [your answer to the user]
+OR when finished / asking the user:
 
-Important (internal steps — Thought / Action / Action Input):
-- Always explain your thinking in the Thought section
-- Use the exact tool names listed above (they come from the ITSM MCP and platform MCP)
-- Knowledge Base FIRST: for how-to / procedure / "how do I resolve" / runbook questions, NEVER give Final Answer on the first turn. ALWAYS search KB articles first with rag_search_kb (preferred) or search_kb, wait for the observation, then answer from those articles.
-- Prefer rag_search_kb when semantic search is available; otherwise use search_kb
-- For ticket / incident questions after (or alongside) KB lookup, use list_incidents, get_incident, create_incident, or close_incident as appropriate
-- For AAP / platform automation execution, use mcp_invoke with the correct tool_name
-- When you have enough information (including after KB article observations), respond with Final Answer only (no Action, no Thought)
+Final Answer: [message to the user]
 
-Final Answer rules (this is what the user sees in chat):
-- Write for a human operator, not for a developer. Use clear, friendly prose.
-- Summarize using the KB articles in your own words — do NOT copy-paste articles verbatim.
-- Do NOT include JSON, Action Input, tool names, or code blocks.
-- Do NOT say "use these tools" or show example API payloads in the Final Answer.
-- You may mention ITSM tickets and AAP workflow names naturally (e.g. "open an ITSM ticket", "run the delete_vm workflow").
-- Prefer a short intro sentence, then numbered steps if helpful. Keep it concise.
+Thought style (shown live in chat):
+- Plain language, present tense, no jargon dump.
+- Good: "Looking up how we create VMs in the knowledge base."
+- Good: "Opening an ITSM ticket, then I'll run the create_vm workflow."
+- Bad: repeating the full Action Input JSON, listing every field, or saying "I will use tool X with parameters…"
 
-Example Final Answer (good — only after KB articles were retrieved):
-"To delete a VM, you'll need owner approval and an ITSM ticket for audit. Then run the delete_vm workflow in AAP with the ticket ID and VM hostname, confirm the VM is gone, and close the ticket with the outcome."
+Rules:
+- Emit EXACTLY ONE Action per reply, then STOP and wait for Observation.
+- NEVER put multiple Thought/Action blocks in the same reply.
+- NEVER invent Observation results. Only continue after a real Observation.
+- Action Input must be a single JSON object for that one Action.
 
-Example Final Answer (bad — never do this):
-"Use create_incident: {{...}} and mcp_invoke: {{...}}" or pasting the full article text.
+=== HOW-TO (explain) ===
+- Search KB once (rag_search_kb or search_kb), then Final Answer with a short summary.
+- Do not create tickets or run AAP for pure how-to questions.
+
+=== EXECUTE (do the work) ===
+- create_vm needs: name, size (small|medium|large), network, environment (dev|test|prod), owner.
+- delete_vm needs: hostname (optional environment, reason).
+- If fields are missing → Final Answer asking only for those fields.
+- When fields are present, steps (ONE Action each turn):
+  1) KB search (once)
+  2) create_incident with title + description (+ optional severity). Do not invent actor_user_id unless required by the schema.
+  3) mcp_invoke create_vm or delete_vm using the ticket id from the Observation
+  4) Final Answer with ticket id, hostname, IP/status
+- add_comment / close_incident are optional; prefer Final Answer after a successful mcp_invoke.
+
+mcp_invoke example:
+Action: mcp_invoke
+Action Input: {{"tool_name":"create_vm","arguments":{{"ticket_id":"INC-…","name":"…","size":"medium","network":"…","environment":"dev","owner":"…"}}}}
+
+Final Answer style: friendly prose, no JSON, no tool dumps.
 """
 
 PLATFORM_TOOLS_SECTION = """mcp_invoke
-   - Invokes a platform MCP tool (AAP automation / service health)
-   - Input format: {"tool_name": "get_service_health|create_vm|delete_vm|...", "arguments": {...}}
-   - Use get_service_health for live component status
-   - Use create_vm / delete_vm when executing AAP workflows referenced in KB articles"""
+   - Platform / AAP tool bridge
+   - Input: {"tool_name": "create_vm|delete_vm|get_service_health|...", "arguments": {...}}
+   - create_vm args: ticket_id, name, size, network, environment, owner
+   - delete_vm args: ticket_id, hostname"""
 
 
 def format_tools_section(tools: list[dict[str, Any]]) -> str:
@@ -109,11 +119,69 @@ def _extract_group(pattern: re.Pattern[str], text: str) -> str | None:
     return match.group(1).strip()
 
 
+def _extract_balanced_json(text: str, start: int) -> str | None:
+    """Return the JSON object starting at text[start] ('{'), respecting strings."""
+    if start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
+def extract_action_input(text: str) -> dict:
+    """Parse only the first Action Input JSON object (ignore later stacked Actions)."""
+    match = re.search(r"Action Input:\s*\{", text, re.IGNORECASE)
+    if not match:
+        return {}
+    blob = _extract_balanced_json(text, match.end() - 1)
+    if not blob:
+        return {}
+    try:
+        data = json.loads(blob)
+        return data if isinstance(data, dict) else {"_raw": blob}
+    except json.JSONDecodeError:
+        return {"_raw": blob}
+
+
+def format_single_step(
+    *,
+    thought: str | None,
+    action: str,
+    action_input: dict | None,
+) -> str:
+    """Canonical one-Action message stored in chat history (avoids multi-step dumps)."""
+    payload = action_input or {}
+    return (
+        f"Thought: {thought or 'Next step.'}\n"
+        f"Action: {action}\n"
+        f"Action Input: {json.dumps(payload, ensure_ascii=False)}"
+    )
+
+
 def parse_react_response(text: str) -> dict:
     """Parse a ReAct-style LLM reply.
 
-    If both Action and Final Answer appear in the same message, prefer Action
-    (models sometimes append a premature Final Answer after naming a tool).
+    Only the first Action / Action Input is used. Prefer Action over Final Answer
+    when both appear in the same message.
     """
     thought = _extract_group(
         re.compile(
@@ -126,16 +194,7 @@ def parse_react_response(text: str) -> dict:
         re.compile(r"Action:\s*([A-Za-z0-9_]+)", re.IGNORECASE),
         text,
     )
-
-    action_input: dict = {}
-    input_match = re.search(
-        r"Action Input:\s*(\{.*\})", text, re.DOTALL | re.IGNORECASE
-    )
-    if input_match:
-        try:
-            action_input = json.loads(input_match.group(1))
-        except json.JSONDecodeError:
-            action_input = {"_raw": input_match.group(1).strip()}
+    action_input = extract_action_input(text) if action else {}
 
     if action:
         return {
@@ -159,7 +218,6 @@ def parse_react_response(text: str) -> dict:
             "raw": text,
         }
 
-    # Plain prose with no ReAct markers — treat as final (caller may reject).
     return {
         "thought": thought,
         "action": None,

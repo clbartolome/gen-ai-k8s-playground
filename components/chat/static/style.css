@@ -141,6 +141,17 @@ body {
   color: var(--text);
 }
 
+.bubble-thought {
+  align-self: flex-start;
+  max-width: 90%;
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+  padding: 6px 10px;
+}
+
 .bubble-error {
   align-self: flex-start;
   background: rgba(255, 102, 102, 0.1);

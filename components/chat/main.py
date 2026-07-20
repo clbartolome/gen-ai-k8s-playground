@@ -16,27 +16,59 @@ jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 
 
-def call_agent(message: str) -> str:
-    payload = json.dumps({"message": message}).encode("utf-8")
+def _agent_json(method: str, path: str, body: dict | None = None) -> dict:
+    data = None
+    headers = {"Content-Type": "application/json"}
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
-        f"{AGENT_URL.rstrip('/')}/message",
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+        f"{AGENT_URL.rstrip('/')}{path}",
+        data=data,
+        headers=headers,
+        method=method,
     )
     with urllib.request.urlopen(req, timeout=AGENT_TIMEOUT) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    return data["response"]
+        return json.loads(resp.read().decode("utf-8"))
 
 
-def process_job(job_id: str, message: str) -> None:
+def process_job(job_id: str, message: str, history: list | None = None) -> None:
     try:
-        response = call_agent(message)
+        start = _agent_json(
+            "POST",
+            "/message",
+            {"message": message, "history": history or []},
+        )
+        run_id = start["run_id"]
+        while True:
+            run = _agent_json("GET", f"/runs/{run_id}")
+            thoughts = run.get("thoughts") or []
+            with jobs_lock:
+                job = jobs.get(job_id)
+                if job is not None:
+                    job["thoughts"] = thoughts
+                    job["status"] = "pending"
+
+            status = run.get("status")
+            if status == "done":
+                with jobs_lock:
+                    jobs[job_id] = {
+                        "status": "done",
+                        "response": run.get("response", ""),
+                        "thoughts": thoughts,
+                    }
+                return
+            if status == "error":
+                with jobs_lock:
+                    jobs[job_id] = {
+                        "status": "error",
+                        "error": run.get("error", "agent error"),
+                        "thoughts": thoughts,
+                    }
+                return
+            threading.Event().wait(0.4)
+    except (urllib.error.URLError, KeyError, json.JSONDecodeError, TimeoutError, RuntimeError) as exc:
         with jobs_lock:
-            jobs[job_id] = {"status": "done", "response": response}
-    except (urllib.error.URLError, KeyError, json.JSONDecodeError, TimeoutError) as exc:
-        with jobs_lock:
-            jobs[job_id] = {"status": "error", "error": str(exc)}
+            jobs[job_id] = {"status": "error", "error": str(exc), "thoughts": []}
 
 
 @app.get("/")
@@ -51,11 +83,17 @@ def ask():
     if not message:
         return jsonify({"error": "message is required"}), 400
 
+    history = data.get("history") or []
+    if not isinstance(history, list):
+        history = []
+
     job_id = str(uuid.uuid4())
     with jobs_lock:
-        jobs[job_id] = {"status": "pending"}
+        jobs[job_id] = {"status": "pending", "thoughts": []}
 
-    threading.Thread(target=process_job, args=(job_id, message), daemon=True).start()
+    threading.Thread(
+        target=process_job, args=(job_id, message, history), daemon=True
+    ).start()
     return jsonify({"job_id": job_id})
 
 
