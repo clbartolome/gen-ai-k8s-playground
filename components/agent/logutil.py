@@ -21,11 +21,3 @@ def setup_logging() -> None:
         stream=sys.stdout,
         force=True,
     )
-
-
-def mask_secret(value: str, *, keep: int = 4) -> str:
-    if not value:
-        return "(empty)"
-    if len(value) <= keep:
-        return "*" * len(value)
-    return f"…{value[-keep:]} (len={len(value)})"

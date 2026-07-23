@@ -4,64 +4,23 @@ Gen AI Playground — deploy roadmap
 Namespace
 ---------
 - Single namespace for the whole stack: gen-ai-playground
-- Simpler for demos, RBAC, and one ArgoCD Application
-- Split into multiple namespaces later only if platform (operators) needs isolation
 
 Labels
 ------
-- demo=gen-ai-k8s-playground        → select all demo resources
+- demo=gen-ai-k8s-playground
 - app.kubernetes.io/part-of=gen-ai-playground
-- app.kubernetes.io/name=agent|chat → per component
+- app.kubernetes.io/name=agent|chat
 
   oc get all,route -l demo=gen-ai-k8s-playground -n gen-ai-playground
-  oc delete all,route -l demo=gen-ai-k8s-playground -n gen-ai-playground
 
 Done
 ----
-- [x] deploy/base — agent, chat, tools, namespace (each: Deployment, Service; chat + tools: Route)
-- [x] Thoughts shown in chat (monitor removed)
+- [x] deploy/base — agent, chat, namespace
 - [x] deploy/overlays/openshift — Quay images
-- [x] deploy/itsm — ITSM + KB via itsm-app MCP; make deploy-itsm / delete-itsm
-              Image: quay.io/rhn_support_rafsanch/itsm-app:aiops-1.0.0 (deploy only)
-              Same namespace gen-ai-playground; agent uses ITSM_MCP_URL + token
-- [x] Removed demo Flask ITSM/RAG from components/tools (platform MCP only)
+- [x] Agent talks to external OpenShift MCP (OPENSHIFT_MCP_URL)
+- [x] Thoughts shown in chat (no separate monitor)
 
-Next (workloads)
-----------------
+Next
+----
 - [ ] LLM config for OpenShift (Secret + env in deployment) when needed
-- [ ] ConfigMap for agent DELAY_SECONDS (demo tuning without rebuild)
 - [ ] Resource requests/limits tuned for your cluster
-- [ ] PodDisruptionBudget if you run >1 replica
-
-ArgoCD
-------
-- [ ] Application pointing to deploy/overlays/openshift
-- [ ] Future app-of-apps when platform/ is added:
-      1) gen-ai-platform  (sync-wave 0)
-      2) gen-ai-workloads (sync-wave 1)
-
-Platform (future — deploy/platform/)
-------------------------------------
-- [ ] Model config CRDs + instances
-- [ ] LlamaStack / inference stack
-- [ ] MLflow
-- [ ] AAP integration
-- [ ] Separate ArgoCD Application(s), not mixed into agent/ or chat/
-
-Overlays (future)
------------------
-- [ ] overlays/dev — lower resources, different image tag
-- [ ] overlays/prod — replicas, ingress TLS, network policies
-
-Security / ops
---------------
-- [ ] NetworkPolicy: chat -> agent only on port 8080
-- [ ] Route TLS edge termination (default OK for internal demos)
-- [ ] ServiceMonitor if you add Prometheus
-
-OpenShift SCC
--------------
-- Deployments must NOT set runAsUser/fsGroup to 1001 (restricted-v2 assigns
-  a UID from the namespace range, e.g. 1000740000+)
-- UBI images use chmod g=u so any assigned UID works
-- hostUsers: false required for restricted-v3

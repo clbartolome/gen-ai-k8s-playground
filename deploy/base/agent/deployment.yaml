@@ -26,17 +26,10 @@ spec:
             - name: http
               containerPort: 8080
           env:
-            - name: DELAY_SECONDS
-              value: "0"
-            - name: MCP_URL
-              value: http://tools:9001
-            - name: ITSM_MCP_URL
-              value: http://itsm-app:8000/mcp/
-            - name: ITSM_MCP_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: itsm-secrets
-                  key: mcp-token
+            - name: OPENSHIFT_MCP_URL
+              value: https://openshift-mcp.apps.hetzner.calopezb.com/mcp/
+            - name: SSL_VERIFY
+              value: "false"
           readinessProbe:
             httpGet:
               path: /health
