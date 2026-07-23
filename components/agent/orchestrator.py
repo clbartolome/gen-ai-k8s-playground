@@ -3,6 +3,7 @@ import logging
 import re
 from typing import Any, Callable
 
+from itsm_mcp import ItsmMcpClient
 from llm import LLMClient
 from openshift_mcp import OpenShiftMcpClient
 from system_prompt import build_system_prompt
@@ -12,7 +13,7 @@ log = logging.getLogger("agent.orchestrator")
 ThoughtCallback = Callable[[str], None]
 
 PRESENT_RESULT_PROMPT = """
-You present OpenShift and Kubernetes tool results directly to the user.
+You present OpenShift/Kubernetes and ITSM/knowledge-base tool results directly to the user.
 
 Rules:
 
@@ -21,7 +22,7 @@ Answer the user's original request directly.
 Do not mention tool names, tool calls, arguments, MCP, APIs, or internal execution details unless they are essential to explain the result.
 Do not describe your reasoning process or narrate the steps you took.
 Use only facts contained in the tool result.
-Do not invent, infer, or assume cluster data that is not present in the result.
+Do not invent, infer, or assume cluster, ticket, or article data that is not present in the result.
 Be concise and prioritize the information that directly answers the user's request.
 Use Markdown only when it improves readability, such as short lists or resource names.
 Do not use Markdown code fences unless the result contains code or commands that must be preserved.
@@ -51,6 +52,35 @@ Say:
 """
 
 
+def _first_json_object(text: str) -> str | None:
+    """Return the first balanced `{...}` slice, respecting JSON string quotes."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
 def _parse_decision(raw: str) -> dict[str, Any]:
     """Extract the first JSON object from the LLM reply."""
     cleaned = re.sub(r"<think>[\s\S]*?</think>", "", raw, flags=re.IGNORECASE)
@@ -62,10 +92,10 @@ def _parse_decision(raw: str) -> dict[str, Any]:
             return data
     except json.JSONDecodeError:
         pass
-    match = re.search(r"\{[\s\S]*\}", cleaned)
-    if not match:
+    snippet = _first_json_object(cleaned)
+    if not snippet:
         raise ValueError(f"No JSON decision in LLM reply: {raw[:200]}")
-    data = json.loads(match.group(0))
+    data = json.loads(snippet)
     if not isinstance(data, dict):
         raise ValueError("Decision JSON was not an object")
     return data
@@ -89,14 +119,52 @@ def _format_tool_result(result: Any) -> str:
 
 
 class AgentOrchestrator:
-    """Decide next action via LLM, then dispatch (OpenShift MCP or reply)."""
+    """Decide next action via LLM, then dispatch (OpenShift / ITSM MCP or reply)."""
 
-    def __init__(self, llm: LLMClient, openshift_mcp: OpenShiftMcpClient) -> None:
+    def __init__(
+        self,
+        llm: LLMClient,
+        openshift_mcp: OpenShiftMcpClient,
+        itsm_mcp: ItsmMcpClient,
+    ) -> None:
         self._llm = llm
         self._openshift_mcp = openshift_mcp
+        self._itsm_mcp = itsm_mcp
         self.ocp_tools = self._openshift_mcp.get_tools()
-        self._system_prompt = build_system_prompt(self.ocp_tools)
-        log.info("Loaded ocp_tools count=%s", len(self.ocp_tools))
+        self.itsm_tools = self._itsm_mcp.list_tools()
+        self._system_prompt = build_system_prompt(self.ocp_tools, self.itsm_tools)
+        log.info(
+            "Loaded ocp_tools count=%s itsm_tools count=%s",
+            len(self.ocp_tools),
+            len(self.itsm_tools),
+        )
+
+    def _present_result(
+        self,
+        user_message: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        result: Any,
+        *,
+        on_thought: ThoughtCallback | None = None,
+    ) -> str:
+        observation = _format_tool_result(result)
+        if on_thought:
+            on_thought("Formatting the result for you…")
+        return self._llm.chat(
+            [
+                {"role": "system", "content": PRESENT_RESULT_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"User request:\n{user_message}\n\n"
+                        f"Tool called: {tool_name}\n"
+                        f"Arguments: {json.dumps(arguments, ensure_ascii=False)}\n\n"
+                        f"Tool result:\n{observation}"
+                    ),
+                },
+            ]
+        ).strip()
 
     def run(
         self,
@@ -135,23 +203,26 @@ class AgentOrchestrator:
                 if on_thought:
                     on_thought(f"Calling OpenShift tool “{tool_name}”…")
                 result = self._openshift_mcp.invoke(tool_name, arguments)
-                observation = _format_tool_result(result)
+                return self._present_result(
+                    user_message,
+                    tool_name,
+                    arguments,
+                    result,
+                    on_thought=on_thought,
+                )
+
+            case _ if action.startswith("itsm."):
+                tool_name = action.removeprefix("itsm.")
                 if on_thought:
-                    on_thought("Formatting the result for you…")
-                return self._llm.chat(
-                    [
-                        {"role": "system", "content": PRESENT_RESULT_PROMPT},
-                        {
-                            "role": "user",
-                            "content": (
-                                f"User request:\n{user_message}\n\n"
-                                f"Tool called: {tool_name}\n"
-                                f"Arguments: {json.dumps(arguments, ensure_ascii=False)}\n\n"
-                                f"Tool result:\n{observation}"
-                            ),
-                        },
-                    ]
-                ).strip()
+                    on_thought(f"Calling ITSM tool “{tool_name}”…")
+                result = self._itsm_mcp.call_tool(tool_name, arguments)
+                return self._present_result(
+                    user_message,
+                    tool_name,
+                    arguments,
+                    result,
+                    on_thought=on_thought,
+                )
 
             case _:
                 log.warning("Unknown action from LLM: %s", action)
