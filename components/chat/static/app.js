@@ -6,6 +6,13 @@ const messagesEl = document.getElementById("messages");
 /** Prior turns sent to the agent (excludes the current user message). */
 const conversationHistory = [];
 
+if (typeof marked !== "undefined") {
+  marked.setOptions({
+    gfm: true,
+    breaks: true,
+  });
+}
+
 function scrollToBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
@@ -13,6 +20,24 @@ function scrollToBottom() {
 function clearEmptyState() {
   const empty = messagesEl.querySelector(".thread-empty");
   if (empty) empty.remove();
+}
+
+function renderBody(role, text) {
+  const body = document.createElement("div");
+  body.className = "bubble-body";
+
+  // Only agent replies are treated as Markdown; keep other roles as plain text.
+  if (role === "agent" && typeof marked !== "undefined") {
+    const html = marked.parse(text || "");
+    body.classList.add("bubble-md");
+    body.innerHTML =
+      typeof DOMPurify !== "undefined"
+        ? DOMPurify.sanitize(html)
+        : html;
+  } else {
+    body.textContent = text;
+  }
+  return body;
 }
 
 function addBubble(role, text, extraClass = "") {
@@ -28,10 +53,7 @@ function addBubble(role, text, extraClass = "") {
   else if (role === "thought") meta.textContent = "Thinking";
   else meta.textContent = "Error";
   bubble.appendChild(meta);
-
-  const body = document.createElement("span");
-  body.textContent = text;
-  bubble.appendChild(body);
+  bubble.appendChild(renderBody(role, text));
 
   messagesEl.appendChild(bubble);
   scrollToBottom();

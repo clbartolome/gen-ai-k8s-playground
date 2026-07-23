@@ -33,6 +33,7 @@ class Settings:
     llm_model: str
     llm_timeout: float
     mcp_url: str
+    openshift_mcp_url: str
     itsm_mcp_url: str
     itsm_mcp_token: str
     itsm_mcp_tool_allowlist: list[str]
@@ -45,20 +46,26 @@ def _csv_list(value: str, fallback: tuple[str, ...]) -> list[str]:
     return items or list(fallback)
 
 
+def _env(name: str, default: str = "") -> str:
+    """Read an env var and strip accidental surrounding quotes."""
+    return os.environ.get(name, default).strip().strip("\"'")
+
+
 def load_settings() -> Settings:
     return Settings(
-        delay_seconds=float(os.environ.get("DELAY_SECONDS", "0")),
-        llm_url=os.environ.get("LLM_URL", ""),
-        llm_api_key=os.environ.get("LLM_API_KEY", ""),
-        llm_model=os.environ.get("LLM_MODEL", ""),
-        llm_timeout=float(os.environ.get("LLM_TIMEOUT", "120")),
-        mcp_url=os.environ.get("MCP_URL", "http://localhost:9001"),
-        itsm_mcp_url=os.environ.get("ITSM_MCP_URL", "http://itsm-app:8000/mcp/"),
-        itsm_mcp_token=os.environ.get("ITSM_MCP_TOKEN", "change-me-mcp-token"),
+        delay_seconds=float(_env("DELAY_SECONDS", "0")),
+        llm_url=_env("LLM_URL"),
+        llm_api_key=_env("LLM_API_KEY"),
+        llm_model=_env("LLM_MODEL"),
+        llm_timeout=float(_env("LLM_TIMEOUT", "120")),
+        mcp_url=_env("MCP_URL", "http://localhost:9001"),
+        openshift_mcp_url=_env("OPENSHIFT_MCP_URL"),
+        itsm_mcp_url=_env("ITSM_MCP_URL", "http://itsm-app:8000/mcp/"),
+        itsm_mcp_token=_env("ITSM_MCP_TOKEN", "change-me-mcp-token"),
         itsm_mcp_tool_allowlist=_csv_list(
-            os.environ.get("ITSM_MCP_TOOLS", ""),
+            _env("ITSM_MCP_TOOLS"),
             DEFAULT_ITSM_MCP_TOOLS,
         ),
-        tools_timeout=float(os.environ.get("TOOLS_TIMEOUT", "30")),
-        max_react_iterations=int(os.environ.get("MAX_REACT_ITERATIONS", "5")),
+        tools_timeout=float(_env("TOOLS_TIMEOUT", "30")),
+        max_react_iterations=int(_env("MAX_REACT_ITERATIONS", "5")),
     )

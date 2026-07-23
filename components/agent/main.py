@@ -6,10 +6,9 @@ import uuid
 from flask import Flask, jsonify, request
 
 from config import load_settings
-from itsm_mcp import ItsmMcpClient
 from llm import LLMClient
-from logutil import mask_secret, setup_logging
-from mcp import MCPClient
+from logutil import setup_logging
+from openshift_mcp import OpenShiftMcpClient
 from orchestrator import AgentOrchestrator
 
 setup_logging()
@@ -17,18 +16,14 @@ log = logging.getLogger("agent.main")
 
 settings = load_settings()
 log.info(
-    "Agent settings llm_model=%s mcp_url=%s itsm_mcp_url=%s itsm_token=%s",
+    "Agent settings llm_model=%s openshift_mcp_url=%s",
     settings.llm_model or "(empty)",
-    settings.mcp_url,
-    settings.itsm_mcp_url,
-    mask_secret(settings.itsm_mcp_token),
+    settings.openshift_mcp_url or "(empty)",
 )
 
 orchestrator = AgentOrchestrator(
-    settings=settings,
     llm=LLMClient(settings),
-    platform_mcp=MCPClient(settings),
-    itsm_mcp=ItsmMcpClient(settings),
+    openshift_mcp=OpenShiftMcpClient(settings),
 )
 
 app = Flask(__name__)
@@ -53,11 +48,10 @@ def _append_thought(run_id: str, text: str) -> None:
         run.setdefault("thoughts", []).append({"text": text})
 
 
-def _process_run(run_id: str, user_message: str, history: list) -> None:
+def _process_run(run_id: str, user_message: str) -> None:
     try:
         response = orchestrator.run(
             user_message,
-            history=history,
             on_thought=lambda text: _append_thought(run_id, text),
         )
         _update_run(run_id, status="done", response=response)
@@ -75,18 +69,15 @@ def health():
 def message():
     data = request.get_json(silent=True) or {}
     user_message = data.get("message", "")
-    history = data.get("history") or []
-    if not isinstance(history, list):
-        history = []
 
     run_id = str(uuid.uuid4())
     with runs_lock:
         runs[run_id] = {"status": "running", "thoughts": [], "response": None}
 
-    log.info("POST /message run_id=%s chars=%s history=%s", run_id, len(user_message), len(history))
+    log.info("POST /message run_id=%s chars=%s", run_id, len(user_message))
     threading.Thread(
         target=_process_run,
-        args=(run_id, user_message, history),
+        args=(run_id, user_message),
         daemon=True,
     ).start()
     return jsonify({"run_id": run_id})
