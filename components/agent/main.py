@@ -5,6 +5,7 @@ import uuid
 
 from flask import Flask, jsonify, request
 
+from aap_mcp import AapMcpClient
 from config import load_settings
 from itsm_mcp import ItsmMcpClient
 from llm import LLMClient
@@ -17,15 +18,17 @@ log = logging.getLogger("agent.main")
 
 settings = load_settings()
 log.info(
-    "Agent settings llm_model=%s openshift_mcp_url=%s itsm_mcp_url=%s",
+    "Agent settings llm_model=%s openshift_mcp_url=%s aap_mcp_url=%s itsm_mcp_url=%s",
     settings.llm_model or "(empty)",
     settings.openshift_mcp_url or "(empty)",
+    settings.aap_mcp_url or "(empty)",
     settings.itsm_mcp_url or "(empty)",
 )
 
 orchestrator = AgentOrchestrator(
     llm=LLMClient(settings),
     openshift_mcp=OpenShiftMcpClient(settings),
+    aap_mcp=AapMcpClient(settings),
     itsm_mcp=ItsmMcpClient(settings),
 )
 

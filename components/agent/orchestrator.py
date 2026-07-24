@@ -3,6 +3,7 @@ import logging
 import re
 from typing import Any, Callable
 
+from aap_mcp import AapMcpClient
 from itsm_mcp import ItsmMcpClient
 from llm import LLMClient
 from openshift_mcp import OpenShiftMcpClient
@@ -13,7 +14,7 @@ log = logging.getLogger("agent.orchestrator")
 ThoughtCallback = Callable[[str], None]
 
 PRESENT_RESULT_PROMPT = """
-You present OpenShift/Kubernetes and ITSM/knowledge-base tool results directly to the user.
+You present OpenShift/Kubernetes, Ansible Automation Platform (AAP), and ITSM/knowledge-base tool results directly to the user.
 
 Rules:
 
@@ -119,23 +120,31 @@ def _format_tool_result(result: Any) -> str:
 
 
 class AgentOrchestrator:
-    """Decide next action via LLM, then dispatch (OpenShift / ITSM MCP or reply)."""
+    """Decide next action via LLM, then dispatch (OpenShift / AAP / ITSM MCP or reply)."""
 
     def __init__(
         self,
         llm: LLMClient,
         openshift_mcp: OpenShiftMcpClient,
+        aap_mcp: AapMcpClient,
         itsm_mcp: ItsmMcpClient,
     ) -> None:
         self._llm = llm
         self._openshift_mcp = openshift_mcp
+        self._aap_mcp = aap_mcp
         self._itsm_mcp = itsm_mcp
         self.ocp_tools = self._openshift_mcp.get_tools()
+        self.aap_tools = self._aap_mcp.list_tools()
         self.itsm_tools = self._itsm_mcp.list_tools()
-        self._system_prompt = build_system_prompt(self.ocp_tools, self.itsm_tools)
+        self._system_prompt = build_system_prompt(
+            self.ocp_tools,
+            self.aap_tools,
+            self.itsm_tools,
+        )
         log.info(
-            "Loaded ocp_tools count=%s itsm_tools count=%s",
+            "Loaded ocp_tools count=%s aap_tools count=%s itsm_tools count=%s",
             len(self.ocp_tools),
+            len(self.aap_tools),
             len(self.itsm_tools),
         )
 
@@ -203,6 +212,19 @@ class AgentOrchestrator:
                 if on_thought:
                     on_thought(f"Calling OpenShift tool “{tool_name}”…")
                 result = self._openshift_mcp.invoke(tool_name, arguments)
+                return self._present_result(
+                    user_message,
+                    tool_name,
+                    arguments,
+                    result,
+                    on_thought=on_thought,
+                )
+
+            case _ if action.startswith("aap."):
+                tool_name = action.removeprefix("aap.")
+                if on_thought:
+                    on_thought(f"Calling AAP tool “{tool_name}”…")
+                result = self._aap_mcp.call_tool(tool_name, arguments)
                 return self._present_result(
                     user_message,
                     tool_name,
