@@ -33,6 +33,8 @@ class Settings:
     llm_model: str
     llm_timeout: float
     openshift_mcp_url: str
+    aap_mcp_url: str
+    aap_mcp_token: str
     itsm_mcp_url: str
     itsm_mcp_token: str
     itsm_mcp_tool_allowlist: list[str]
@@ -56,6 +58,8 @@ def load_settings() -> Settings:
         llm_model=_env("LLM_MODEL"),
         llm_timeout=float(_env("LLM_TIMEOUT", "120")),
         openshift_mcp_url=_env("OPENSHIFT_MCP_URL"),
+        aap_mcp_url=_env("AAP_MCP_URL"),
+        aap_mcp_token=_env("AAP_MCP_TOKEN"),
         itsm_mcp_url=_env("ITSM_MCP_URL", "http://itsm-app:8000/mcp/"),
         itsm_mcp_token=_env("ITSM_MCP_TOKEN", "change-me-mcp-token"),
         itsm_mcp_tool_allowlist=_csv_list(

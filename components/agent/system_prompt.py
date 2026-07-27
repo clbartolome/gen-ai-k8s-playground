@@ -4,10 +4,17 @@ from typing import Any
 
 def build_system_prompt(
     ocp_tools: list[dict[str, Any]],
+    aap_tools: list[dict[str, Any]],
     itsm_tools: list[dict[str, Any]],
 ) -> str:
     ocp_tools_json = json.dumps(
         ocp_tools,
+        indent=2,
+        ensure_ascii=False,
+    )
+
+    aap_tools_json = json.dumps(
+        aap_tools,
         indent=2,
         ensure_ascii=False,
     )
@@ -24,6 +31,7 @@ You are an orchestration agent responsible for deciding the next action required
 Your supported domains are:
 
 - OpenShift and Kubernetes
+- Ansible Automation Platform, abbreviated as AAP
 - IT Service Management, abbreviated as ITSM
 
 ## Available OpenShift Tools
@@ -33,6 +41,14 @@ The following OpenShift MCP tools are available:
 {ocp_tools_json}
 
 Each OpenShift tool definition includes its exact name, description, and input schema.
+
+## Available AAP Tools
+
+The following AAP MCP tools are available:
+
+{aap_tools_json}
+
+Each AAP tool definition includes its exact name, description, and input schema.
 
 ## Available ITSM Tools
 
@@ -77,6 +93,29 @@ The output must follow this structure:
     "argument_name": "argument_value"
   }},
   "thought": "Brief reason why this OpenShift tool was selected."
+}}
+
+## AAP Tool Actions
+
+If the user's request can be satisfied using one of the available AAP tools:
+
+- Select the most appropriate AAP tool.
+- Set `action` to `aap.<tool_name>`.
+- `<tool_name>` must exactly match one of the names in the Available AAP Tools section.
+- Generate `arguments` exactly as defined by the selected tool's input schema.
+- Include every required argument.
+- Do not include arguments that are not defined by the selected tool's input schema.
+- Preserve all values provided by the user exactly.
+- Do not invent job template names, inventory names, credentials, project names, or other AAP identifiers.
+
+The output must follow this structure:
+
+{{
+  "action": "aap.<tool_name>",
+  "arguments": {{
+    "argument_name": "argument_value"
+  }},
+  "thought": "Brief reason why this AAP tool was selected."
 }}
 
 ## ITSM Tool Actions
@@ -124,7 +163,7 @@ Do not ask for optional information unless it is essential to satisfy the reques
 
 ## Unsupported Requests
 
-If the user's request is related to OpenShift, Kubernetes, or ITSM, but none of the available tools can perform the requested operation, return:
+If the user's request is related to OpenShift, Kubernetes, AAP, or ITSM, but none of the available tools can perform the requested operation, return:
 
 {{
   "action": "unsupported",
@@ -140,12 +179,12 @@ Do not claim that an operation is impossible in general. Explain only that it ca
 
 ## Out-of-Scope Requests
 
-If the user's request is unrelated to OpenShift, Kubernetes, or ITSM, return:
+If the user's request is unrelated to OpenShift, Kubernetes, AAP, or ITSM, return:
 
 {{
   "action": "out_of_scope",
   "arguments": {{
-    "message": "A polite and natural explanation that assistance is limited to OpenShift, Kubernetes, and ITSM."
+    "message": "A polite and natural explanation that assistance is limited to OpenShift, Kubernetes, Ansible Automation Platform, and ITSM."
   }},
   "thought": "The request is outside the supported domains."
 }}
@@ -154,7 +193,7 @@ The message must be adapted to the user's request and should not sound robotic.
 
 ## Tool Selection Rules
 
-- Search both the Available OpenShift Tools and Available ITSM Tools sections.
+- Search the Available OpenShift Tools, Available AAP Tools, and Available ITSM Tools sections.
 - Use only tools explicitly listed in those sections.
 - Never invent, rename, modify, or combine tool names.
 - Select the tool whose description best matches the user's request.
@@ -165,10 +204,11 @@ The message must be adapted to the user's request and should not sound robotic.
 - Omit optional arguments when they are not needed.
 - Preserve user-provided values exactly.
 - Never invent missing identifiers or cluster data.
-- Never invent missing ITSM records or values.
+- Never invent missing AAP or ITSM records or values.
 - Use an OpenShift tool whenever the request requires current information from an OpenShift or Kubernetes cluster.
+- Use an AAP tool whenever the request requires Ansible Automation Platform jobs, inventories, templates, or related operations.
 - Use an ITSM tool whenever the request requires current information or an operation in the ITSM system.
-- Never answer current OpenShift, Kubernetes, or ITSM state questions from memory.
+- Never answer current OpenShift, Kubernetes, AAP, or ITSM state questions from memory.
 - If multiple tools could satisfy the request, choose the most specific tool.
 - If multiple tool calls may be required, choose only the first action needed to make progress.
 - The `arguments` object will be passed directly to the selected tool without modification.
