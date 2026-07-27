@@ -3,8 +3,15 @@ const messageInput = document.getElementById("message");
 const sendBtn = document.getElementById("send-btn");
 const messagesEl = document.getElementById("messages");
 
-/** Prior turns sent to the agent (excludes the current user message). */
-const conversationHistory = [];
+const THREAD_KEY = "genai_chat_thread_id";
+
+function getThreadId() {
+  return sessionStorage.getItem(THREAD_KEY) || null;
+}
+
+function setThreadId(threadId) {
+  if (threadId) sessionStorage.setItem(THREAD_KEY, threadId);
+}
 
 if (typeof marked !== "undefined") {
   marked.setOptions({
@@ -70,6 +77,7 @@ async function pollJob(jobId, onThoughts) {
       onThoughts(thoughts.slice(seen));
       seen = thoughts.length;
     }
+    if (data.thread_id) setThreadId(data.thread_id);
     if (data.status === "pending") {
       await new Promise((r) => setTimeout(r, 400));
       continue;
@@ -87,16 +95,19 @@ form.addEventListener("submit", async (event) => {
   addBubble("user", message);
   messageInput.value = "";
 
-  const historyPayload = conversationHistory.map((turn) => ({ ...turn }));
+  const payload = { message };
+  const threadId = getThreadId();
+  if (threadId) payload.thread_id = threadId;
 
   try {
     const startRes = await fetch("/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, history: historyPayload }),
+      body: JSON.stringify(payload),
     });
     const startData = await startRes.json();
     if (!startRes.ok) throw new Error(startData.error || "Could not start request");
+    if (startData.thread_id) setThreadId(startData.thread_id);
 
     const result = await pollJob(startData.job_id, (newThoughts) => {
       newThoughts.forEach((item) => {
@@ -105,12 +116,12 @@ form.addEventListener("submit", async (event) => {
       });
     });
 
+    if (result.thread_id) setThreadId(result.thread_id);
+
     if (result.status === "error") {
       addBubble("error", result.error);
     } else {
       addBubble("agent", result.response);
-      conversationHistory.push({ role: "user", content: message });
-      conversationHistory.push({ role: "assistant", content: result.response });
     }
   } catch (err) {
     addBubble("error", err.message);

@@ -1,29 +1,134 @@
 import json
 from typing import Any
 
+_MAX_TOOL_DESC = 160
+_MAX_PROP_DESC = 80
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _simplify_schema(schema: Any, *, depth: int = 0) -> Any:
+    """Keep only what the model needs to fill tool arguments."""
+    if depth > 3 or not isinstance(schema, dict):
+        if isinstance(schema, dict) and "type" in schema:
+            return {"type": schema["type"]}
+        return True
+
+    out: dict[str, Any] = {}
+    if "type" in schema:
+        out["type"] = schema["type"]
+
+    required = schema.get("required")
+    if isinstance(required, list) and required:
+        out["required"] = [str(item) for item in required]
+
+    enum = schema.get("enum")
+    if isinstance(enum, list) and enum:
+        out["enum"] = enum[:20]
+
+    description = schema.get("description")
+    if isinstance(description, str) and description.strip() and depth > 0:
+        out["description"] = _clip(description, _MAX_PROP_DESC)
+
+    properties = schema.get("properties")
+    if isinstance(properties, dict) and properties:
+        out["properties"] = {
+            str(name): _simplify_schema(value, depth=depth + 1)
+            for name, value in properties.items()
+        }
+
+    items = schema.get("items")
+    if isinstance(items, dict):
+        out["items"] = _simplify_schema(items, depth=depth + 1)
+
+    return out or {"type": "object"}
+
+
+def _compact_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop MCP metadata; keep name, short description, and slim args schema."""
+    compacted: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+
+        function = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+        name = tool.get("name") or function.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+
+        description = tool.get("description") or function.get("description") or ""
+        schema = (
+            tool.get("inputSchema")
+            or tool.get("parameters")
+            or function.get("parameters")
+            or {}
+        )
+
+        entry: dict[str, Any] = {"name": name}
+        if isinstance(description, str) and description.strip():
+            entry["description"] = _clip(description, _MAX_TOOL_DESC)
+        if isinstance(schema, dict) and schema:
+            entry["inputSchema"] = _simplify_schema(schema)
+        compacted.append(entry)
+    return compacted
+
+
+def _tools_json(tools: list[dict[str, Any]], *, max_chars: int = 12_000) -> str:
+    """Serialize tools compactly; degrade further if still too large for context."""
+    compacted = _compact_tools(tools)
+    payload = json.dumps(compacted, ensure_ascii=False, separators=(",", ":"))
+    if len(payload) <= max_chars:
+        return payload
+
+    lean = []
+    for tool in compacted:
+        args = tool.get("inputSchema") if isinstance(tool.get("inputSchema"), dict) else {}
+        props = args.get("properties") if isinstance(args.get("properties"), dict) else {}
+        entry: dict[str, Any] = {"name": tool["name"]}
+        if tool.get("description"):
+            entry["description"] = tool["description"]
+        if props or args.get("required"):
+            entry["inputSchema"] = {
+                "type": "object",
+                "properties": {
+                    name: {"type": (value.get("type") if isinstance(value, dict) else "string")}
+                    for name, value in props.items()
+                },
+            }
+            if args.get("required"):
+                entry["inputSchema"]["required"] = args["required"]
+        lean.append(entry)
+
+    payload = json.dumps(lean, ensure_ascii=False, separators=(",", ":"))
+    if len(payload) <= max_chars:
+        return payload
+
+    names_only = [
+        {"name": tool["name"], "description": tool.get("description", "")[:80]}
+        for tool in compacted
+    ]
+    while names_only:
+        payload = json.dumps(names_only, ensure_ascii=False, separators=(",", ":"))
+        if len(payload) <= max_chars:
+            return payload
+        names_only.pop()
+    return "[]"
+
 
 def build_system_prompt(
     ocp_tools: list[dict[str, Any]],
     aap_tools: list[dict[str, Any]],
     itsm_tools: list[dict[str, Any]],
 ) -> str:
-    ocp_tools_json = json.dumps(
-        ocp_tools,
-        indent=2,
-        ensure_ascii=False,
-    )
-
-    aap_tools_json = json.dumps(
-        aap_tools,
-        indent=2,
-        ensure_ascii=False,
-    )
-
-    itsm_tools_json = json.dumps(
-        itsm_tools,
-        indent=2,
-        ensure_ascii=False,
-    )
+    # Caps leave room inside a 16k-token model for the user message + JSON reply.
+    ocp_tools_json = _tools_json(ocp_tools, max_chars=10_000)
+    aap_tools_json = _tools_json(aap_tools, max_chars=4_000)
+    itsm_tools_json = _tools_json(itsm_tools, max_chars=4_000)
 
     return f"""
 You are an orchestration agent responsible for deciding the next action required to satisfy the user's request.
@@ -107,6 +212,7 @@ If the user's request can be satisfied using one of the available AAP tools:
 - Do not include arguments that are not defined by the selected tool's input schema.
 - Preserve all values provided by the user exactly.
 - Do not invent job template names, inventory names, credentials, project names, or other AAP identifiers.
+- Be careful with workflow_job_template and job_template tools, only use workflow if it is mentioned in the user's request.
 
 The output must follow this structure:
 
@@ -150,16 +256,28 @@ Instead, return:
 {{
   "action": "request_information",
   "arguments": {{
-    "message": "A natural and concise question asking only for the missing required information."
+    "message": "A natural and concise question asking only for the missing required information.",
+    "intended_action": "openshift.<tool_name> | aap.<tool_name> | itsm.<tool_name>",
+    "known_arguments": {{
+      "argument_name": "value already known from the user or earlier tool results"
+    }}
   }},
   "thought": "Additional information is required before the tool can be executed."
 }}
 
 The question in `arguments.message` must be directly related to the user's request.
 
+`intended_action` and `known_arguments` are required whenever you can identify the next tool and any arguments already known. They are stored in the thread so the next user reply can continue the same operation.
+
 Ask only for information required by the selected tool's input schema.
 
 Do not ask for optional information unless it is essential to satisfy the request.
+
+When OPERATIONAL_TRACE or PENDING_REQUEST context is provided:
+
+- Prefer continuing the pending operation over starting an unrelated tool call.
+- Reuse facts from the operational trace instead of repeating identical lookups.
+- Treat the latest user message as an answer to the pending question when PENDING_REQUEST is present.
 
 ## Unsupported Requests
 

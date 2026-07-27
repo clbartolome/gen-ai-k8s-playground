@@ -32,6 +32,7 @@ class Settings:
     llm_api_key: str
     llm_model: str
     llm_timeout: float
+    llm_max_tokens: int
     openshift_mcp_url: str
     aap_mcp_url: str
     aap_mcp_token: str
@@ -57,6 +58,7 @@ def load_settings() -> Settings:
         llm_api_key=_env("LLM_API_KEY"),
         llm_model=_env("LLM_MODEL"),
         llm_timeout=float(_env("LLM_TIMEOUT", "120")),
+        llm_max_tokens=int(_env("LLM_MAX_TOKENS", "1024")),
         openshift_mcp_url=_env("OPENSHIFT_MCP_URL"),
         aap_mcp_url=_env("AAP_MCP_URL"),
         aap_mcp_token=_env("AAP_MCP_TOKEN"),

@@ -29,11 +29,20 @@ class LLMClient:
             raise RuntimeError("LLM_MODEL must be set")
 
         endpoint = self.endpoint
-        log.debug("LLM POST %s model=%s", endpoint, self._settings.llm_model)
+        log.debug(
+            "LLM POST %s model=%s max_tokens=%s",
+            endpoint,
+            self._settings.llm_model,
+            self._settings.llm_max_tokens,
+        )
         data = request_json(
             "POST",
             endpoint,
-            body={"model": self._settings.llm_model, "messages": messages},
+            body={
+                "model": self._settings.llm_model,
+                "messages": messages,
+                "max_tokens": self._settings.llm_max_tokens,
+            },
             headers={"Authorization": f"Bearer {self._settings.llm_api_key}"},
             timeout=self._settings.llm_timeout,
         )

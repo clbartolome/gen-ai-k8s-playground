@@ -31,14 +31,16 @@ def _agent_json(method: str, path: str, body: dict | None = None) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def process_job(job_id: str, message: str, history: list | None = None) -> None:
+def process_job(job_id: str, message: str, thread_id: str | None = None) -> None:
     try:
-        start = _agent_json(
-            "POST",
-            "/message",
-            {"message": message, "history": history or []},
-        )
+        body: dict = {"message": message}
+        if thread_id:
+            body["thread_id"] = thread_id
+
+        start = _agent_json("POST", "/message", body)
         run_id = start["run_id"]
+        resolved_thread_id = start.get("thread_id") or thread_id
+
         while True:
             run = _agent_json("GET", f"/runs/{run_id}")
             thoughts = run.get("thoughts") or []
@@ -47,6 +49,8 @@ def process_job(job_id: str, message: str, history: list | None = None) -> None:
                 if job is not None:
                     job["thoughts"] = thoughts
                     job["status"] = "pending"
+                    if resolved_thread_id:
+                        job["thread_id"] = resolved_thread_id
 
             status = run.get("status")
             if status == "done":
@@ -55,6 +59,8 @@ def process_job(job_id: str, message: str, history: list | None = None) -> None:
                         "status": "done",
                         "response": run.get("response", ""),
                         "thoughts": thoughts,
+                        "thread_id": run.get("thread_id") or resolved_thread_id,
+                        "pending": run.get("pending"),
                     }
                 return
             if status == "error":
@@ -63,6 +69,7 @@ def process_job(job_id: str, message: str, history: list | None = None) -> None:
                         "status": "error",
                         "error": run.get("error", "agent error"),
                         "thoughts": thoughts,
+                        "thread_id": run.get("thread_id") or resolved_thread_id,
                     }
                 return
             threading.Event().wait(0.4)
@@ -83,18 +90,24 @@ def ask():
     if not message:
         return jsonify({"error": "message is required"}), 400
 
-    history = data.get("history") or []
-    if not isinstance(history, list):
-        history = []
+    thread_id = data.get("thread_id")
+    if not isinstance(thread_id, str) or not thread_id.strip():
+        thread_id = None
+    else:
+        thread_id = thread_id.strip()
 
     job_id = str(uuid.uuid4())
     with jobs_lock:
-        jobs[job_id] = {"status": "pending", "thoughts": []}
+        jobs[job_id] = {
+            "status": "pending",
+            "thoughts": [],
+            "thread_id": thread_id,
+        }
 
     threading.Thread(
-        target=process_job, args=(job_id, message, history), daemon=True
+        target=process_job, args=(job_id, message, thread_id), daemon=True
     ).start()
-    return jsonify({"job_id": job_id})
+    return jsonify({"job_id": job_id, "thread_id": thread_id})
 
 
 @app.get("/jobs/<job_id>")
