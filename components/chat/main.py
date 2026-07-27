@@ -31,12 +31,21 @@ def _agent_json(method: str, path: str, body: dict | None = None) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def process_job(job_id: str, message: str, history: list | None = None) -> None:
+def process_job(
+    job_id: str,
+    message: str,
+    history: list | None = None,
+    session_id: str | None = None,
+) -> None:
     try:
         start = _agent_json(
             "POST",
             "/message",
-            {"message": message, "history": history or []},
+            {
+                "message": message,
+                "history": history or [],
+                "session_id": session_id,
+            },
         )
         run_id = start["run_id"]
         while True:
@@ -87,12 +96,18 @@ def ask():
     if not isinstance(history, list):
         history = []
 
+    session_id = data.get("session_id") or None
+    if session_id is not None:
+        session_id = str(session_id).strip() or None
+
     job_id = str(uuid.uuid4())
     with jobs_lock:
         jobs[job_id] = {"status": "pending", "thoughts": []}
 
     threading.Thread(
-        target=process_job, args=(job_id, message, history), daemon=True
+        target=process_job,
+        args=(job_id, message, history, session_id),
+        daemon=True,
     ).start()
     return jsonify({"job_id": job_id})
 

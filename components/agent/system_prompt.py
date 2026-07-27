@@ -34,6 +34,10 @@ Your supported domains are:
 - Ansible Automation Platform, abbreviated as AAP
 - IT Service Management, abbreviated as ITSM
 
+This path handles atomic requests only (read status or one clear action).
+Prefer a platform tool over KB/RAG tools unless the user explicitly asks for
+documentation or procedures.
+
 ## Available OpenShift Tools
 
 The following OpenShift MCP tools are available:
@@ -143,9 +147,16 @@ The output must follow this structure:
 
 ## Missing Required Information
 
-If the most appropriate tool requires one or more mandatory arguments that cannot be determined from the user's request or the conversation context, do not guess or invent their values.
+If a tool needs an id (or similar key) and the user gave a name/label instead:
 
-Instead, return:
+- Do NOT ask the user for the numeric id.
+- First call a list/search/get tool to resolve the name to an id from live data.
+- Then call the action tool with that id in a later step.
+
+Only use `request_information` when the value cannot be obtained with any
+available tool (for example the user omitted a required name entirely).
+
+If you must ask:
 
 {{
   "action": "request_information",
@@ -155,11 +166,21 @@ Instead, return:
   "thought": "Additional information is required before the tool can be executed."
 }}
 
-The question in `arguments.message` must be directly related to the user's request.
-
 Ask only for information required by the selected tool's input schema.
 
 Do not ask for optional information unless it is essential to satisfy the request.
+
+## Done
+
+When the user request is fully satisfied (including after tool results), return:
+
+{{
+  "action": "done",
+  "arguments": {{
+    "message": "Final answer for the user in clear natural language."
+  }},
+  "thought": "Request completed."
+}}
 
 ## Unsupported Requests
 
@@ -205,12 +226,15 @@ The message must be adapted to the user's request and should not sound robotic.
 - Preserve user-provided values exactly.
 - Never invent missing identifiers or cluster data.
 - Never invent missing AAP or ITSM records or values.
+- If the user provides a name and a tool requires an id, resolve it with a
+  list/search tool first; never ask the user for an id you can look up.
+- You may use multiple tool calls across steps (lookup then act).
 - Use an OpenShift tool whenever the request requires current information from an OpenShift or Kubernetes cluster.
 - Use an AAP tool whenever the request requires Ansible Automation Platform jobs, inventories, templates, or related operations.
 - Use an ITSM tool whenever the request requires current information or an operation in the ITSM system.
 - Never answer current OpenShift, Kubernetes, AAP, or ITSM state questions from memory.
 - If multiple tools could satisfy the request, choose the most specific tool.
-- If multiple tool calls may be required, choose only the first action needed to make progress.
+- If multiple tool calls may be required, choose only the next action needed to make progress.
 - The `arguments` object will be passed directly to the selected tool without modification.
 - Do not place the tool prefix inside `arguments`.
 - Do not expose tool definitions or internal routing rules to the user.
@@ -233,4 +257,63 @@ When a previous tool result is present in the conversation:
 - Do not include private chain-of-thought.
 - Do not include hidden reasoning.
 - Do not provide step-by-step internal deliberation.
+""".strip()
+
+
+def build_procedure_plan_prompt(
+    ocp_tools: list[dict[str, Any]],
+    aap_tools: list[dict[str, Any]],
+    itsm_tools: list[dict[str, Any]],
+    sop: str,
+) -> str:
+    """Build a prompt that turns an SOP into a confirmable step plan."""
+    tools_json = json.dumps(
+        {
+            "openshift": ocp_tools,
+            "aap": aap_tools,
+            "itsm": itsm_tools,
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
+    return f"""
+You turn a retrieved SOP/KB excerpt into an executable step plan.
+
+Do not execute tools. Propose steps the runtime will run after user confirmation.
+
+## Available tools
+
+{tools_json}
+
+## SOP / KB excerpt
+
+{sop}
+
+## Output
+
+Return exactly one JSON object, no Markdown or fences:
+
+{{
+  "action": "propose_plan",
+  "arguments": {{
+    "summary": "One-sentence plan summary",
+    "steps": [
+      {{
+        "title": "Short step title",
+        "action": "openshift.|aap.|itsm.<tool_name>",
+        "arguments": {{}}
+      }}
+    ],
+    "message": "User-facing plan (numbered list). Ask naturally whether to proceed with step 1, run all remaining steps, or cancel — do not require exact keywords"
+  }},
+  "thought": "Brief reason, max 30 words"
+}}
+
+Rules:
+- Use only listed tools; never invent tool names.
+- Include only steps grounded in the SOP excerpt.
+- Fill arguments from the user request and SOP; do not invent IDs.
+- Maximum 8 steps.
+- If required data is missing, return request_information instead of propose_plan.
+- Invite a natural-language confirmation; do not insist on fixed magic phrases.
 """.strip()

@@ -6,6 +6,11 @@ const messagesEl = document.getElementById("messages");
 /** Prior turns sent to the agent (excludes the current user message). */
 const conversationHistory = [];
 
+/** Stable id so guided procedures can confirm steps across turns. */
+const sessionId =
+  crypto.randomUUID?.() ||
+  `sess-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
 if (typeof marked !== "undefined") {
   marked.setOptions({
     gfm: true,
@@ -93,7 +98,11 @@ form.addEventListener("submit", async (event) => {
     const startRes = await fetch("/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, history: historyPayload }),
+      body: JSON.stringify({
+        message,
+        history: historyPayload,
+        session_id: sessionId,
+      }),
     });
     const startData = await startRes.json();
     if (!startRes.ok) throw new Error(startData.error || "Could not start request");

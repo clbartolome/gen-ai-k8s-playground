@@ -54,10 +54,15 @@ def _append_thought(run_id: str, text: str) -> None:
         run.setdefault("thoughts", []).append({"text": text})
 
 
-def _process_run(run_id: str, user_message: str) -> None:
+def _process_run(
+    run_id: str,
+    user_message: str,
+    session_id: str | None = None,
+) -> None:
     try:
         response = orchestrator.run(
             user_message,
+            session_id=session_id,
             on_thought=lambda text: _append_thought(run_id, text),
         )
         _update_run(run_id, status="done", response=response)
@@ -75,15 +80,23 @@ def health():
 def message():
     data = request.get_json(silent=True) or {}
     user_message = data.get("message", "")
+    session_id = data.get("session_id") or None
+    if session_id is not None:
+        session_id = str(session_id).strip() or None
 
     run_id = str(uuid.uuid4())
     with runs_lock:
         runs[run_id] = {"status": "running", "thoughts": [], "response": None}
 
-    log.info("POST /message run_id=%s chars=%s", run_id, len(user_message))
+    log.info(
+        "POST /message run_id=%s session_id=%s chars=%s",
+        run_id,
+        session_id or "-",
+        len(user_message),
+    )
     threading.Thread(
         target=_process_run,
-        args=(run_id, user_message),
+        args=(run_id, user_message, session_id),
         daemon=True,
     ).start()
     return jsonify({"run_id": run_id})
