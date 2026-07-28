@@ -23,6 +23,7 @@ def empty_thread() -> dict[str, Any]:
         "dialogue": [],
         "trace": [],
         "pending": None,
+        "last_category": None,
     }
 
 
@@ -63,6 +64,7 @@ class ThreadStore:
         action: str,
         pending: dict[str, Any] | None = None,
         trace_entry: dict[str, Any] | None = None,
+        last_category: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             thread = self._threads.setdefault(thread_id, empty_thread())
@@ -81,6 +83,9 @@ class ThreadStore:
                 trace.append(entry)
                 if len(trace) > _MAX_TRACE_ENTRIES:
                     thread["trace"] = trace[-_MAX_TRACE_ENTRIES:]
+
+            if last_category:
+                thread["last_category"] = last_category
 
             if action == "request_information" and pending:
                 thread["pending"] = pending

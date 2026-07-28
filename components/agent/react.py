@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from aap_mcp import AapMcpClient
@@ -29,9 +30,22 @@ _CATEGORY_RE = re.compile(
     r"Category:\s*(OPENSHIFT|AAP|ITSM|RAG|OUT_CONTEXT)",
     re.IGNORECASE,
 )
+_VALID_CATEGORIES = frozenset(
+    {"OPENSHIFT", "AAP", "ITSM", "RAG", "OUT_CONTEXT"}
+)
 _MAX_OBSERVATION_CHARS = 12_000
+_MAX_DIALOGUE_CHARS = 6_000
 
 InvokeFn = Callable[[str, dict[str, Any]], Any]
+ThoughtCallback = Callable[[str], None]
+
+
+@dataclass
+class TurnOutcome:
+    response: str
+    category: str
+    action: str = "reply"
+    pending: dict[str, Any] | None = None
 
 
 class ReactAgent:
@@ -52,67 +66,172 @@ class ReactAgent:
         self._rag_not_found_prompt = build_rag_not_found_prompt()
         self._out_context_prompt = build_out_context_prompt()
 
-    def run(self, user_message: str) -> str:
-        category = self._route(user_message)
-        log.info("Routed category=%s", category)
+    def run(
+        self,
+        user_message: str,
+        *,
+        dialogue: list[dict[str, Any]] | None = None,
+        pending: dict[str, Any] | None = None,
+        last_category: str | None = None,
+        on_thought: ThoughtCallback | None = None,
+    ) -> TurnOutcome:
+        prior = _fit_dialogue(dialogue or [], max_chars=_MAX_DIALOGUE_CHARS)
+        if on_thought:
+            on_thought("Classifying your request…")
+        category = self._resolve_category(
+            user_message,
+            dialogue=prior,
+            pending=pending,
+            last_category=last_category,
+        )
+        log.info(
+            "Routed category=%s dialogue_turns=%s pending=%s last_category=%s",
+            category,
+            len(prior),
+            bool(pending),
+            last_category,
+        )
+        if on_thought:
+            on_thought(f"Classified as {category}")
 
         if category == "OUT_CONTEXT":
-            return self._out_context(user_message)
+            return TurnOutcome(
+                response=self._out_context(user_message, dialogue=prior),
+                category=category,
+            )
         if category == "OPENSHIFT":
             return self._run_specialist(
                 user_message,
+                category=category,
                 tools=self._openshift_mcp.get_tools(),
                 build_prompt=build_openshift_prompt,
                 invoke=self._openshift_mcp.invoke,
+                dialogue=prior,
+                on_thought=on_thought,
             )
         if category == "AAP":
             return self._run_specialist(
                 user_message,
+                category=category,
                 tools=self._aap_mcp.list_tools(),
                 build_prompt=build_aap_prompt,
                 invoke=self._aap_mcp.call_tool,
+                dialogue=prior,
+                on_thought=on_thought,
             )
         if category == "ITSM":
             return self._run_specialist(
                 user_message,
+                category=category,
                 tools=self._itsm_mcp.list_tools(),
                 build_prompt=build_itsm_prompt,
                 invoke=self._itsm_mcp.call_tool,
+                dialogue=prior,
+                on_thought=on_thought,
             )
         if category == "RAG":
-            return self._run_rag(user_message)
+            if on_thought:
+                on_thought("Searching the knowledge base…")
+            return TurnOutcome(
+                response=self._run_rag(user_message, dialogue=prior),
+                category=category,
+            )
 
-        return (
-            "I could not classify that request. Please rephrase it in terms of "
-            "OpenShift, Ansible, ITSM, or IT knowledge."
+        return TurnOutcome(
+            response=(
+                "I could not classify that request. Please rephrase it in terms of "
+                "OpenShift, Ansible, ITSM, or IT knowledge."
+            ),
+            category="OUT_CONTEXT",
         )
 
-    def _route(self, user_message: str) -> str:
-        raw = self._llm.chat(
-            [
-                {"role": "system", "content": self._router_prompt},
-                {"role": "user", "content": user_message},
-            ]
+    def _resolve_category(
+        self,
+        user_message: str,
+        *,
+        dialogue: list[dict[str, str]],
+        pending: dict[str, Any] | None,
+        last_category: str | None,
+    ) -> str:
+        pending_category = None
+        if isinstance(pending, dict):
+            pending_category = str(pending.get("category") or "").upper() or None
+            if pending_category not in _VALID_CATEGORIES:
+                pending_category = None
+
+        # If we previously asked the user for information, stay in that domain
+        # until the pending ask is cleared — answer length does not matter.
+        if pending_category and pending_category != "OUT_CONTEXT":
+            log.info("Continuing pending category=%s", pending_category)
+            return pending_category
+
+        return self._route(
+            user_message,
+            dialogue=dialogue,
+            previous_category=last_category,
         )
+
+    def _route(
+        self,
+        user_message: str,
+        *,
+        dialogue: list[dict[str, str]] | None = None,
+        previous_category: str | None = None,
+    ) -> str:
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": self._router_prompt},
+        ]
+        if previous_category:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"Previous category for this thread: {previous_category}. "
+                        "If the latest user message is a follow-up answer or continuation, "
+                        "keep that category. If it is a new request, reclassify it."
+                    ),
+                }
+            )
+        messages.extend(dialogue or [])
+        messages.append({"role": "user", "content": user_message})
+        raw = self._llm.chat(messages)
+        log.info("Router raw=%s", (raw or "").strip()[:300])
         match = _CATEGORY_RE.search(raw or "")
         if match:
             return match.group(1).upper()
         upper = (raw or "").upper()
         for name in ("OPENSHIFT", "AAP", "ITSM", "RAG", "OUT_CONTEXT"):
-            if name in upper:
+            if re.search(rf"\b{name}\b", upper):
                 return name
+        if previous_category in _VALID_CATEGORIES:
+            log.warning(
+                "Router parse failed; falling back to previous_category=%s raw=%s",
+                previous_category,
+                (raw or "")[:200],
+            )
+            return previous_category
         log.warning("Router parse failed raw=%s", (raw or "")[:200])
         return "OUT_CONTEXT"
 
-    def _out_context(self, user_message: str) -> str:
-        return self._llm.chat(
-            [
-                {"role": "system", "content": self._out_context_prompt},
-                {"role": "user", "content": user_message},
-            ]
-        ).strip()
+    def _out_context(
+        self,
+        user_message: str,
+        *,
+        dialogue: list[dict[str, str]] | None = None,
+    ) -> str:
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": self._out_context_prompt},
+        ]
+        messages.extend(dialogue or [])
+        messages.append({"role": "user", "content": user_message})
+        return self._llm.chat(messages).strip()
 
-    def _run_rag(self, user_message: str) -> str:
+    def _run_rag(
+        self,
+        user_message: str,
+        *,
+        dialogue: list[dict[str, str]] | None = None,
+    ) -> str:
         tools = [
             t
             for t in self._itsm_mcp.list_tools()
@@ -125,7 +244,7 @@ class ReactAgent:
         }
         if "rag_search_kb" not in by_name or "get_kb_article" not in by_name:
             log.warning("RAG tools missing names=%s", sorted(by_name))
-            return self._rag_not_found(user_message)
+            return self._rag_not_found(user_message, dialogue=dialogue)
 
         search_args = _query_arguments(by_name["rag_search_kb"], user_message)
         log.info("RAG search arguments=%s", search_args)
@@ -133,12 +252,12 @@ class ReactAgent:
             search_result = self._itsm_mcp.call_tool("rag_search_kb", search_args)
         except Exception:
             log.exception("RAG search failed")
-            return self._rag_not_found(user_message)
+            return self._rag_not_found(user_message, dialogue=dialogue)
 
         article_id = _extract_article_id(search_result)
         if not article_id:
             log.info("RAG search returned no article id")
-            return self._rag_not_found(user_message)
+            return self._rag_not_found(user_message, dialogue=dialogue)
 
         detail_args = _article_id_arguments(by_name["get_kb_article"], article_id)
         log.info("RAG get_kb_article arguments=%s", detail_args)
@@ -153,6 +272,7 @@ class ReactAgent:
                 result={"error": str(exc)},
                 present_prompt=self._rag_present_prompt,
                 compact=False,
+                dialogue=dialogue,
             )
 
         return self._present(
@@ -162,28 +282,40 @@ class ReactAgent:
             result=detail,
             present_prompt=self._rag_present_prompt,
             compact=False,
+            dialogue=dialogue,
         )
 
-    def _rag_not_found(self, user_message: str) -> str:
-        return self._llm.chat(
-            [
-                {"role": "system", "content": self._rag_not_found_prompt},
-                {"role": "user", "content": user_message},
-            ]
-        ).strip()
+    def _rag_not_found(
+        self,
+        user_message: str,
+        *,
+        dialogue: list[dict[str, str]] | None = None,
+    ) -> str:
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": self._rag_not_found_prompt},
+        ]
+        messages.extend(dialogue or [])
+        messages.append({"role": "user", "content": user_message})
+        return self._llm.chat(messages).strip()
 
     def _run_specialist(
         self,
         user_message: str,
         *,
+        category: str,
         tools: list[dict[str, Any]],
         build_prompt: Callable[[list[dict[str, Any]]], str],
         invoke: InvokeFn,
-    ) -> str:
+        dialogue: list[dict[str, str]] | None = None,
+        on_thought: ThoughtCallback | None = None,
+    ) -> TurnOutcome:
         if not tools:
-            return (
-                "I could not reach the tools needed for this request right now. "
-                "Please try again in a moment."
+            return TurnOutcome(
+                response=(
+                    "I could not reach the tools needed for this request right now. "
+                    "Please try again in a moment."
+                ),
+                category=category,
             )
 
         allowed = {
@@ -191,7 +323,13 @@ class ReactAgent:
             for t in tools
             if isinstance(t, dict) and isinstance(t.get("name"), str)
         }
-        decision = self._decide(user_message, build_prompt(tools))
+        if on_thought:
+            on_thought("Deciding the next operation…")
+        decision = self._decide(
+            user_message,
+            build_prompt(tools),
+            dialogue=dialogue,
+        )
         action = str(decision.get("action") or "").strip()
         arguments = decision.get("arguments") or {}
         if not isinstance(arguments, dict):
@@ -199,47 +337,96 @@ class ReactAgent:
 
         log.info("Specialist action=%s arguments=%s", action, arguments)
 
+        if action == "request_information":
+            message = arguments.get("message")
+            if not isinstance(message, str) or not message.strip():
+                message = "Could you provide the missing details to continue?"
+            return TurnOutcome(
+                response=message.strip(),
+                category=category,
+                action="request_information",
+                pending={
+                    "category": category,
+                    "question": message.strip(),
+                },
+            )
+
         if action == "reply" or action in {"unsupported", "out_of_scope"}:
             message = arguments.get("message")
             if isinstance(message, str) and message.strip():
-                return message.strip()
-            return (
-                "I do not have enough information or capabilities to complete "
-                "that request right now."
+                text = message.strip()
+                if action == "reply" and _looks_like_clarifying_question(text):
+                    return TurnOutcome(
+                        response=text,
+                        category=category,
+                        action="request_information",
+                        pending={
+                            "category": category,
+                            "question": text,
+                        },
+                    )
+                return TurnOutcome(response=text, category=category)
+            return TurnOutcome(
+                response=(
+                    "I do not have enough information or capabilities to complete "
+                    "that request right now."
+                ),
+                category=category,
             )
 
         if action not in allowed:
             log.warning("Unknown or disallowed tool action=%s", action)
-            return (
-                "I could not map that request to an available operation. "
-                "Please rephrase or provide more detail."
+            return TurnOutcome(
+                response=(
+                    "I could not map that request to an available operation. "
+                    "Please rephrase or provide more detail."
+                ),
+                category=category,
             )
 
+        if on_thought:
+            on_thought(f"Calling tool “{action}”…")
         try:
             result = invoke(action, arguments)
         except Exception as exc:
             log.exception("Tool invoke failed action=%s", action)
-            return self._present(
+            return TurnOutcome(
+                response=self._present(
+                    user_message,
+                    tool_name=action,
+                    arguments=arguments,
+                    result={"error": str(exc)},
+                    dialogue=dialogue,
+                ),
+                category=category,
+                action=action,
+            )
+
+        return TurnOutcome(
+            response=self._present(
                 user_message,
                 tool_name=action,
                 arguments=arguments,
-                result={"error": str(exc)},
-            )
-
-        return self._present(
-            user_message,
-            tool_name=action,
-            arguments=arguments,
-            result=result,
+                result=result,
+                dialogue=dialogue,
+            ),
+            category=category,
+            action=action,
         )
 
-    def _decide(self, user_message: str, system_prompt: str) -> dict[str, Any]:
-        raw = self._llm.chat(
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ]
-        )
+    def _decide(
+        self,
+        user_message: str,
+        system_prompt: str,
+        *,
+        dialogue: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+        ]
+        messages.extend(dialogue or [])
+        messages.append({"role": "user", "content": user_message})
+        raw = self._llm.chat(messages)
         try:
             return _parse_decision(raw)
         except ValueError:
@@ -263,14 +450,23 @@ class ReactAgent:
         result: Any,
         present_prompt: str | None = None,
         compact: bool = True,
+        dialogue: list[dict[str, str]] | None = None,
     ) -> str:
         observation = _observation_for_presentation(result, compact=compact)
+        history_blob = ""
+        if dialogue:
+            history_blob = (
+                "Recent conversation:\n"
+                + "\n".join(f"{m['role']}: {m['content']}" for m in dialogue[-4:])
+                + "\n\n"
+            )
         return self._llm.chat(
             [
                 {"role": "system", "content": present_prompt or self._present_prompt},
                 {
                     "role": "user",
                     "content": (
+                        f"{history_blob}"
                         f"User request:\n{user_message}\n\n"
                         f"Tool called: {tool_name}\n"
                         f"Arguments: {json.dumps(arguments, ensure_ascii=False)}\n\n"
@@ -279,6 +475,54 @@ class ReactAgent:
                 },
             ]
         ).strip()
+
+
+def _looks_like_clarifying_question(text: str) -> bool:
+    lowered = text.lower()
+    if "?" in text:
+        return True
+    markers = (
+        "please provide",
+        "could you provide",
+        "which namespace",
+        "what namespace",
+        "need the",
+        "need more",
+        "missing",
+        "specify",
+        "tell me the",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _fit_dialogue(
+    dialogue: list[dict[str, Any]],
+    *,
+    max_chars: int,
+) -> list[dict[str, str]]:
+    fitted: list[dict[str, str]] = []
+    budget = max_chars
+    for message in reversed(dialogue):
+        role = message.get("role")
+        content = message.get("content")
+        if role not in {"user", "assistant"} or not isinstance(content, str):
+            continue
+        if len(content) > budget:
+            if not fitted:
+                fitted.append(
+                    {
+                        "role": role,
+                        "content": content[: max(0, budget - 40)]
+                        + "\n[Earlier message truncated]",
+                    }
+                )
+            break
+        fitted.append({"role": role, "content": content})
+        budget -= len(content)
+        if budget <= 0:
+            break
+    fitted.reverse()
+    return fitted
 
 
 def _first_json_object(text: str) -> str | None:

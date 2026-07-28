@@ -2,6 +2,8 @@ const form = document.getElementById("chat-form");
 const messageInput = document.getElementById("message");
 const sendBtn = document.getElementById("send-btn");
 const messagesEl = document.getElementById("messages");
+const newThreadBtn = document.getElementById("new-thread-btn");
+const threadLabel = document.getElementById("thread-label");
 
 const THREAD_KEY = "genai_chat_thread_id";
 
@@ -10,7 +12,43 @@ function getThreadId() {
 }
 
 function setThreadId(threadId) {
-  if (threadId) sessionStorage.setItem(THREAD_KEY, threadId);
+  if (threadId) {
+    sessionStorage.setItem(THREAD_KEY, threadId);
+  } else {
+    sessionStorage.removeItem(THREAD_KEY);
+  }
+  updateThreadLabel();
+}
+
+function clearThreadId() {
+  sessionStorage.removeItem(THREAD_KEY);
+  updateThreadLabel();
+}
+
+function shortThreadId(threadId) {
+  if (!threadId) return "New conversation";
+  return threadId.length > 12 ? `${threadId.slice(0, 8)}…` : threadId;
+}
+
+function updateThreadLabel() {
+  if (!threadLabel) return;
+  const threadId = getThreadId();
+  threadLabel.textContent = shortThreadId(threadId);
+  threadLabel.title = threadId || "No conversation yet — send a message to start one";
+}
+
+function showEmptyState() {
+  messagesEl.innerHTML = "";
+  const empty = document.createElement("div");
+  empty.className = "thread-empty";
+  empty.textContent = "Send a message to start the conversation.";
+  messagesEl.appendChild(empty);
+}
+
+function startNewConversation() {
+  clearThreadId();
+  showEmptyState();
+  messageInput.focus();
 }
 
 if (typeof marked !== "undefined") {
@@ -86,6 +124,10 @@ async function pollJob(jobId, onThoughts) {
   }
 }
 
+newThreadBtn.addEventListener("click", () => {
+  startNewConversation();
+});
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const message = messageInput.value.trim();
@@ -130,3 +172,5 @@ form.addEventListener("submit", async (event) => {
     messageInput.focus();
   }
 });
+
+updateThreadLabel();

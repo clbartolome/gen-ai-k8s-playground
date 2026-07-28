@@ -4,13 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Gen AI Playground · Chat</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=8">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=9">
 </head>
 <body>
   <div class="app">
     <header class="topbar">
       <span class="topbar-title">Gen AI Playground</span>
-      <span class="topbar-tag">Chat</span>
+      <div class="topbar-actions">
+        <span id="thread-label" class="thread-label" title="Conversation id">New conversation</span>
+        <button id="new-thread-btn" type="button" class="btn-secondary">New conversation</button>
+        <span class="topbar-tag">Chat</span>
+      </div>
     </header>
 
     <header class="page-header">
@@ -40,6 +44,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
-  <script src="{{ url_for('static', filename='app.js') }}?v=6"></script>
+  <script src="{{ url_for('static', filename='app.js') }}?v=7"></script>
 </body>
 </html>
