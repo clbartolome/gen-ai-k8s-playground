@@ -24,14 +24,12 @@ DEFAULT_AAP_MCP_TOOLS = (
     "jobs_stdout_retrieve",
 )
 
-# Used to classify MCP tools from the same itsm-app server.
-KB_MCP_TOOLS = frozenset(
+
+# Read-only KB tools used by the RAG specialist.
+RAG_MCP_TOOLS = frozenset(
     {
         "rag_search_kb",
-        "search_kb",
-        "list_kb_articles",
         "get_kb_article",
-        "create_kb_article",
     }
 )
 

@@ -5,16 +5,24 @@ import uuid
 
 from flask import Flask, jsonify, request
 
+from aap_mcp import AapMcpClient
 from config import load_settings
+from itsm_mcp import ItsmMcpClient
 from llm import LLMClient
 from logutil import setup_logging
+from openshift_mcp import OpenShiftMcpClient
 from react import ReactAgent
 
 setup_logging()
 log = logging.getLogger("agent.main")
 
 settings = load_settings()
-agent = ReactAgent(llm=LLMClient(settings))
+agent = ReactAgent(
+    llm=LLMClient(settings),
+    openshift_mcp=OpenShiftMcpClient(settings),
+    aap_mcp=AapMcpClient(settings),
+    itsm_mcp=ItsmMcpClient(settings),
+)
 
 app = Flask(__name__)
 
