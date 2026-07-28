@@ -8,7 +8,7 @@ import re
 from typing import Any, Callable
 
 from aap_mcp import AapMcpClient
-from config import DEFAULT_ITSM_MCP_TOOLS, RAG_MCP_TOOLS
+from config import RAG_MCP_TOOLS
 from itsm_mcp import ItsmMcpClient
 from llm import LLMClient
 from openshift_mcp import OpenShiftMcpClient
@@ -18,7 +18,8 @@ from prompts import (
     build_openshift_prompt,
     build_out_context_prompt,
     build_present_result_prompt,
-    build_rag_prompt,
+    build_rag_not_found_prompt,
+    build_rag_present_prompt,
     build_router_prompt,
 )
 
@@ -47,6 +48,8 @@ class ReactAgent:
         self._itsm_mcp = itsm_mcp
         self._router_prompt = build_router_prompt()
         self._present_prompt = build_present_result_prompt()
+        self._rag_present_prompt = build_rag_present_prompt()
+        self._rag_not_found_prompt = build_rag_not_found_prompt()
         self._out_context_prompt = build_out_context_prompt()
 
     def run(self, user_message: str) -> str:
@@ -77,17 +80,7 @@ class ReactAgent:
                 invoke=self._itsm_mcp.call_tool,
             )
         if category == "RAG":
-            tools = [
-                t
-                for t in self._itsm_mcp.list_tools()
-                if isinstance(t, dict) and t.get("name") in RAG_MCP_TOOLS
-            ]
-            return self._run_specialist(
-                user_message,
-                tools=tools,
-                build_prompt=build_rag_prompt,
-                invoke=self._itsm_mcp.call_tool,
-            )
+            return self._run_rag(user_message)
 
         return (
             "I could not classify that request. Please rephrase it in terms of "
@@ -115,6 +108,66 @@ class ReactAgent:
         return self._llm.chat(
             [
                 {"role": "system", "content": self._out_context_prompt},
+                {"role": "user", "content": user_message},
+            ]
+        ).strip()
+
+    def _run_rag(self, user_message: str) -> str:
+        tools = [
+            t
+            for t in self._itsm_mcp.list_tools()
+            if isinstance(t, dict) and t.get("name") in RAG_MCP_TOOLS
+        ]
+        by_name = {
+            t["name"]: t
+            for t in tools
+            if isinstance(t.get("name"), str)
+        }
+        if "rag_search_kb" not in by_name or "get_kb_article" not in by_name:
+            log.warning("RAG tools missing names=%s", sorted(by_name))
+            return self._rag_not_found(user_message)
+
+        search_args = _query_arguments(by_name["rag_search_kb"], user_message)
+        log.info("RAG search arguments=%s", search_args)
+        try:
+            search_result = self._itsm_mcp.call_tool("rag_search_kb", search_args)
+        except Exception:
+            log.exception("RAG search failed")
+            return self._rag_not_found(user_message)
+
+        article_id = _extract_article_id(search_result)
+        if not article_id:
+            log.info("RAG search returned no article id")
+            return self._rag_not_found(user_message)
+
+        detail_args = _article_id_arguments(by_name["get_kb_article"], article_id)
+        log.info("RAG get_kb_article arguments=%s", detail_args)
+        try:
+            detail = self._itsm_mcp.call_tool("get_kb_article", detail_args)
+        except Exception as exc:
+            log.exception("RAG get_kb_article failed id=%s", article_id)
+            return self._present(
+                user_message,
+                tool_name="get_kb_article",
+                arguments=detail_args,
+                result={"error": str(exc)},
+                present_prompt=self._rag_present_prompt,
+                compact=False,
+            )
+
+        return self._present(
+            user_message,
+            tool_name="get_kb_article",
+            arguments=detail_args,
+            result=detail,
+            present_prompt=self._rag_present_prompt,
+            compact=False,
+        )
+
+    def _rag_not_found(self, user_message: str) -> str:
+        return self._llm.chat(
+            [
+                {"role": "system", "content": self._rag_not_found_prompt},
                 {"role": "user", "content": user_message},
             ]
         ).strip()
@@ -208,11 +261,13 @@ class ReactAgent:
         tool_name: str,
         arguments: dict[str, Any],
         result: Any,
+        present_prompt: str | None = None,
+        compact: bool = True,
     ) -> str:
-        observation = _observation_for_presentation(result)
+        observation = _observation_for_presentation(result, compact=compact)
         return self._llm.chat(
             [
-                {"role": "system", "content": self._present_prompt},
+                {"role": "system", "content": present_prompt or self._present_prompt},
                 {
                     "role": "user",
                     "content": (
@@ -383,10 +438,13 @@ def _format_tool_result(result: Any) -> str:
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
-def _observation_for_presentation(result: Any) -> str:
-    compact = _compact_list_payload(result)
-    if compact is not None:
-        observation = json.dumps(compact, ensure_ascii=False, indent=2)
+def _observation_for_presentation(result: Any, *, compact: bool = True) -> str:
+    if compact:
+        compacted = _compact_list_payload(result)
+        if compacted is not None:
+            observation = json.dumps(compacted, ensure_ascii=False, indent=2)
+        else:
+            observation = _format_tool_result(result)
     else:
         observation = _format_tool_result(result)
     if len(observation) > _MAX_OBSERVATION_CHARS:
@@ -395,3 +453,90 @@ def _observation_for_presentation(result: Any) -> str:
             + "\n[Tool result truncated to fit model context]"
         )
     return observation
+
+
+def _unwrap_payload(result: Any) -> Any:
+    if isinstance(result, str):
+        try:
+            return json.loads(result)
+        except json.JSONDecodeError:
+            return result
+    if not isinstance(result, dict):
+        return result
+    if "text" in result and isinstance(result["text"], str):
+        try:
+            return json.loads(result["text"])
+        except json.JSONDecodeError:
+            pass
+    content = result.get("content")
+    if isinstance(content, list):
+        texts = [
+            str(item.get("text", ""))
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+        if texts:
+            merged = "\n".join(texts)
+            try:
+                return json.loads(merged)
+            except json.JSONDecodeError:
+                return {"text": merged}
+    return result
+
+
+def _search_hits(result: Any) -> list[dict[str, Any]]:
+    payload = _unwrap_payload(result)
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("results", "hits", "articles", "items", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    if any(key in payload for key in ("id", "article_id", "kb_id", "uuid")):
+        return [payload]
+    return []
+
+
+def _extract_article_id(result: Any) -> str | None:
+    for hit in _search_hits(result):
+        for key in ("id", "article_id", "kb_id", "uuid"):
+            value = hit.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        article = hit.get("article")
+        if isinstance(article, dict):
+            for key in ("id", "article_id", "kb_id", "uuid"):
+                value = article.get(key)
+                if value is not None and str(value).strip():
+                    return str(value).strip()
+    return None
+
+
+def _tool_properties(tool: dict[str, Any]) -> dict[str, Any]:
+    schema = (
+        tool.get("inputSchema")
+        or tool.get("parameters")
+        or {}
+    )
+    if not isinstance(schema, dict):
+        return {}
+    props = schema.get("properties")
+    return props if isinstance(props, dict) else {}
+
+
+def _query_arguments(tool: dict[str, Any], user_message: str) -> dict[str, Any]:
+    props = _tool_properties(tool)
+    for key in ("query", "question", "q", "text", "search", "prompt"):
+        if key in props:
+            return {key: user_message}
+    return {"query": user_message}
+
+
+def _article_id_arguments(tool: dict[str, Any], article_id: str) -> dict[str, Any]:
+    props = _tool_properties(tool)
+    for key in ("article_id", "id", "kb_id", "uuid"):
+        if key in props:
+            return {key: article_id}
+    return {"id": article_id}

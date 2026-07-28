@@ -65,6 +65,27 @@ Explain briefly that you can only help with OpenShift/Kubernetes, Ansible Automa
 Do not solve the out-of-scope request. Do not invent facts. No JSON.
 """
 
+RAG_NOT_FOUND_PROMPT = """You are an operations assistant for the Gen AI Playground.
+
+A knowledge-base search found no relevant article or process for the user's request.
+
+Reply politely in the same language as the user.
+Explain that you could not find information or a documented procedure for their request.
+Do not invent a procedure. Do not mention tools, APIs, or internal systems. No JSON.
+"""
+
+RAG_PRESENT_PROMPT = """You present a knowledge-base article to the user.
+
+Rules:
+- Reply in clear, natural, friendly prose in the same language as the user.
+- Explain the process or answer using only the article content provided.
+- Prefer step-by-step guidance when the article describes a procedure.
+- Do not mention tool names, MCP, APIs, or internal retrieval details.
+- Do not invent steps that are not in the article.
+- Never reply with raw JSON.
+- Use Markdown only when it helps (numbered steps, short lists).
+"""
+
 
 def _clip(text: str, limit: int) -> str:
     text = " ".join(text.split())
@@ -269,9 +290,9 @@ def build_rag_prompt(tools: list[dict[str, Any]]) -> str:
         role="IT knowledge-base specialist",
         domain_rules=(
             "Help with IT how-tos and documented processes using only the knowledge-base "
-            "tools below. Search or retrieve articles first; ground the answer in KB "
-            "content. If nothing relevant is found, say so politely. Never invent "
-            "procedures that are not in the tool results."
+            "tools below. Prefer rag_search_kb to find candidate articles. "
+            "Do not call get_kb_article yourself; the runtime fetches article detail. "
+            "Never invent procedures that are not in the knowledge base."
         ),
         tools=tools,
         max_tool_chars=6_000,
@@ -280,6 +301,14 @@ def build_rag_prompt(tools: list[dict[str, Any]]) -> str:
 
 def build_out_context_prompt() -> str:
     return OUT_CONTEXT_PROMPT
+
+
+def build_rag_not_found_prompt() -> str:
+    return RAG_NOT_FOUND_PROMPT
+
+
+def build_rag_present_prompt() -> str:
+    return RAG_PRESENT_PROMPT
 
 
 def build_present_result_prompt() -> str:
