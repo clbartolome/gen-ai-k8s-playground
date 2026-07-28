@@ -25,14 +25,16 @@ class AapMcpClient:
             self._url += "/"
         self._timeout = settings.tools_timeout
         self._token = settings.aap_mcp_token
+        self._allowlist = settings.aap_mcp_tool_allowlist
         self._request_id = 0
         self._session_id: str | None = None
         self._initialized = False
         log.info(
-            "AapMcpClient ready url=%s timeout=%ss token=%s",
+            "AapMcpClient ready url=%s timeout=%ss token=%s allowlist=%s",
             self._url,
             self._timeout,
             mask_secret(self._token),
+            ",".join(self._allowlist) or "(all)",
         )
 
     def _next_id(self) -> int:
@@ -172,18 +174,24 @@ class AapMcpClient:
         )
         self._initialized = True
 
-    def list_tools(self) -> list[dict]:
-        """List tools from the AAP MCP server (tools/list)."""
+    def list_tools(self, *, allowlist: list[str] | None = None) -> list[dict]:
+        """List tools from the AAP MCP server (tools/list), filtered by allowlist."""
         result = self._rpc("tools/list")
         tools = result.get("tools") if isinstance(result, dict) else None
         if not isinstance(tools, list):
             log.warning("AAP MCP tools/list unexpected result type=%s", type(result))
             return []
-        log.info(
-            "AAP MCP tools count=%s names=%s",
-            len(tools),
-            [t.get("name") for t in tools if isinstance(t, dict)],
-        )
+        all_names = [t.get("name") for t in tools if isinstance(t, dict)]
+        log.info("AAP MCP tools/list raw_count=%s names=%s", len(tools), all_names)
+        names = allowlist if allowlist is not None else self._allowlist
+        if names:
+            allowed = set(names)
+            tools = [t for t in tools if t.get("name") in allowed]
+            log.info(
+                "AAP MCP tools after allowlist count=%s names=%s",
+                len(tools),
+                [t.get("name") for t in tools],
+            )
         return tools
 
     def call_tool(self, name: str, arguments: dict | None = None) -> Any:

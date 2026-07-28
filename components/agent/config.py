@@ -14,6 +14,16 @@ DEFAULT_ITSM_MCP_TOOLS = (
     "close_incident",
 )
 
+DEFAULT_AAP_MCP_TOOLS = (
+    "workflow_job_templates_list",
+    "job_templates_list",
+    "workflow_job_templates_launch_create",
+    "job_templates_launch_create",
+    "workflow_jobs_retrieve",
+    "jobs_retrieve",
+    "jobs_stdout_retrieve",
+)
+
 # Used to classify MCP tools from the same itsm-app server.
 KB_MCP_TOOLS = frozenset(
     {
@@ -36,6 +46,7 @@ class Settings:
     openshift_mcp_url: str
     aap_mcp_url: str
     aap_mcp_token: str
+    aap_mcp_tool_allowlist: list[str]
     itsm_mcp_url: str
     itsm_mcp_token: str
     itsm_mcp_tool_allowlist: list[str]
@@ -62,6 +73,10 @@ def load_settings() -> Settings:
         openshift_mcp_url=_env("OPENSHIFT_MCP_URL"),
         aap_mcp_url=_env("AAP_MCP_URL"),
         aap_mcp_token=_env("AAP_MCP_TOKEN"),
+        aap_mcp_tool_allowlist=_csv_list(
+            _env("AAP_MCP_TOOLS"),
+            DEFAULT_AAP_MCP_TOOLS,
+        ),
         itsm_mcp_url=_env("ITSM_MCP_URL", "http://itsm-app:8000/mcp/"),
         itsm_mcp_token=_env("ITSM_MCP_TOKEN", "change-me-mcp-token"),
         itsm_mcp_tool_allowlist=_csv_list(
