@@ -188,6 +188,53 @@ Return exactly one JSON object and nothing else (no Markdown fences, no commenta
 - If nothing was provided, return {"provided": []}.
 """
 
+RAG_ACTION_ERROR_PROMPT = """You explain a failed procedure step to the user.
+
+# Mission
+Tell the user politely that the procedure could not be completed because a step failed.
+Use only the failure details provided. Do not invent success.
+
+# Rules
+- Reply in the same language as the user.
+- Be clear and concise. Say what could not be completed and include the relevant detail.
+- Do not mention tools, MCP, APIs, or internal systems by technical name unless the failure text already does.
+- Suggest one practical next step when appropriate.
+- No JSON. No Markdown code fences.
+"""
+
+RAG_ACTION_SUMMARY_PROMPT = """You present the outcome of an executed procedure to the user.
+
+# Mission
+Write a clear summary of what was done, using only the execution state and follow-up requirements provided.
+Include the follow-up details the user needs next, filled with real values from the state when available.
+
+# Rules
+- Reply in the same language as the user.
+- Use only facts from the provided state, step log, and follow-up list.
+- Do not invent IDs, statuses, or results that are not in the data.
+- Do not mention tools, MCP, APIs, or internal retrieval details.
+- Prefer short Markdown sections when helpful (what was done, key values, follow-up).
+- Never reply with raw JSON.
+"""
+
+RAG_ACTION_MERGE_PROMPT = """You extract values from a tool result for later procedure steps.
+
+# Mission
+From the tool result only, pick identifiers and useful field values that later steps may need.
+Do not invent values. Prefer ids, numbers, names, statuses, ticket/incident/job identifiers.
+
+# Output
+Return exactly one JSON object and nothing else:
+
+{
+  "derived": {
+    "short_key": "value as string"
+  }
+}
+
+If nothing useful is present, return {"derived": {}}.
+"""
+
 
 def _clip(text: str, limit: int) -> str:
     text = " ".join(text.split())
@@ -442,6 +489,48 @@ def build_rag_action_ask_prompt() -> str:
 
 def build_rag_action_fill_prompt() -> str:
     return RAG_ACTION_FILL_PROMPT
+
+
+def build_rag_action_step_prompt(tools: list[dict[str, Any]]) -> str:
+    catalog = tools_json(tools, max_chars=12_000)
+    return f"""You execute one procedure step by choosing exactly one tool call.
+
+# Mission
+Given the current step, accumulated state, and available tools, decide which tool to call and with which arguments.
+Use only values from the step text and accumulated state. Do not invent identifiers.
+
+# Available tools
+{catalog}
+
+# Output
+Return exactly one JSON object and nothing else (no Markdown fences):
+
+{{
+  "action": "<exact_tool_name|skip>",
+  "arguments": {{}},
+  "thought": "Brief reason (max 30 words)"
+}}
+
+# Rules
+- `action` must be an exact tool name from the catalog, or `skip` if no tool is needed for this step.
+- Fill `arguments` exactly per that tool's inputSchema. Include all required args when calling a tool.
+- Prefer tools that match the step intent. Prefer values already in accumulated state over guessing.
+- Preserve user-provided and derived values exactly.
+- Never invent tool names or argument values.
+- If required data for a tool is missing from the state, still choose the best tool only when args can be filled; otherwise use `skip` and explain in thought.
+""".strip()
+
+
+def build_rag_action_error_prompt() -> str:
+    return RAG_ACTION_ERROR_PROMPT
+
+
+def build_rag_action_summary_prompt() -> str:
+    return RAG_ACTION_SUMMARY_PROMPT
+
+
+def build_rag_action_merge_prompt() -> str:
+    return RAG_ACTION_MERGE_PROMPT
 
 
 def build_present_result_prompt() -> str:
