@@ -24,6 +24,7 @@ from prompts import (
     build_rag_present_prompt,
     build_router_prompt,
 )
+from rag_action import run_rag_action
 
 log = logging.getLogger("agent.react")
 
@@ -138,6 +139,13 @@ class ReactAgent:
         if category == "RAG":
             intent = self._classify_rag_intent(user_message, dialogue=prior)
             log.info("RAG intent=%s", intent)
+            if intent == "ACTION":
+                if on_thought:
+                    on_thought("Preparing the requested action…")
+                return TurnOutcome(
+                    response=run_rag_action(user_message, dialogue=prior),
+                    category=category,
+                )
             if on_thought:
                 on_thought("Searching the knowledge base…")
             return TurnOutcome(
