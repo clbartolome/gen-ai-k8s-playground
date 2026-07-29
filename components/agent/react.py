@@ -137,14 +137,39 @@ class ReactAgent:
                 on_thought=on_thought,
             )
         if category == "RAG":
+            if isinstance(pending, dict) and pending.get("kind") == "rag_action":
+                if on_thought:
+                    on_thought("Continuing the requested action…")
+                result = run_rag_action(
+                    user_message,
+                    llm=self._llm,
+                    itsm_mcp=self._itsm_mcp,
+                    dialogue=prior,
+                    pending=pending,
+                )
+                return TurnOutcome(
+                    response=result.response,
+                    category=category,
+                    action=result.action,
+                    pending=result.pending,
+                )
             intent = self._classify_rag_intent(user_message, dialogue=prior)
             log.info("RAG intent=%s", intent)
             if intent == "ACTION":
                 if on_thought:
                     on_thought("Preparing the requested action…")
+                result = run_rag_action(
+                    user_message,
+                    llm=self._llm,
+                    itsm_mcp=self._itsm_mcp,
+                    dialogue=prior,
+                    pending=pending,
+                )
                 return TurnOutcome(
-                    response=run_rag_action(user_message, dialogue=prior),
+                    response=result.response,
                     category=category,
+                    action=result.action,
+                    pending=result.pending,
                 )
             if on_thought:
                 on_thought("Searching the knowledge base…")

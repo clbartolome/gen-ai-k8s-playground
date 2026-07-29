@@ -110,6 +110,49 @@ Rules:
 - Use Markdown only when it helps (numbered steps, short lists).
 """
 
+RAG_ACTION_EXTRACT_PROMPT = """You extract actionable procedure fields from a knowledge-base article.
+
+The article is structured with these sections:
+- Required information — data that must be collected from the user.
+- Procedure — steps to follow and how to fill specific fields.
+- Follow up — information to return to the user so they can continue after the procedure.
+
+# Mission
+From the article and the user request, extract ONLY:
+1. Required parameters already present in the user request (recover their values).
+2. Required parameters still missing (must be asked later).
+3. Procedure steps with detail.
+4. Follow-up details to provide when the procedure finishes.
+
+Do not invent parameters, values, or steps that are not supported by the article or the user request.
+Do not put a parameter in both known and missing lists.
+
+# Output
+Return exactly one JSON object and nothing else (no Markdown fences, no commentary):
+
+{
+  "known_parameters": [
+    {"name": "parameter name from Required information", "value": "value recovered from the user request"}
+  ],
+  "missing_parameters": [
+    {"name": "parameter name still needed", "detail": "short clarifying detail from the article"}
+  ],
+  "procedure": [
+    {"step": 1, "detail": "step text including how to fill fields when the article explains it"}
+  ],
+  "follow_up": [
+    "detail or message to provide to the user when the procedure finishes"
+  ]
+}
+
+# Rules
+- known_parameters: only values explicitly present in the user request (or prior turns if provided). Preserve user values exactly.
+- missing_parameters: only Required information items not already recovered. If none are missing, use [].
+- procedure / follow_up: use only article content. If a section is missing, use [].
+- Use the same language as the user (or the article if unclear) for name/detail/follow_up text.
+- Never invent facts. Never mention tools, MCP, APIs, or retrieval.
+"""
+
 
 def _clip(text: str, limit: int) -> str:
     text = " ".join(text.split())
@@ -352,6 +395,10 @@ def build_rag_not_found_prompt() -> str:
 
 def build_rag_present_prompt() -> str:
     return RAG_PRESENT_PROMPT
+
+
+def build_rag_action_extract_prompt() -> str:
+    return RAG_ACTION_EXTRACT_PROMPT
 
 
 def build_present_result_prompt() -> str:

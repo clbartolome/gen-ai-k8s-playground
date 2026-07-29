@@ -89,6 +89,9 @@ class ThreadStore:
 
             if action == "request_information" and pending:
                 thread["pending"] = pending
+            elif isinstance(pending, dict) and pending.get("kind") == "rag_action":
+                # Keep recovered RAG ACTION parameters for later turns.
+                thread["pending"] = pending
             else:
                 thread["pending"] = None
 
