@@ -153,6 +153,41 @@ Return exactly one JSON object and nothing else (no Markdown fences, no commenta
 - Never invent facts. Never mention tools, MCP, APIs, or retrieval.
 """
 
+RAG_ACTION_ASK_PROMPT = """You ask the user for missing information needed to continue a procedure.
+
+# Mission
+Write a short, polite message that asks only for the missing parameters listed below.
+Do not explain the procedure. Do not list follow-up details. Do not invent extra fields.
+
+# Rules
+- Reply in the same language as the user.
+- Ask clearly for each missing item; include the short detail when it helps.
+- If several items are missing, ask for all of them in one message.
+- Do not mention tools, MCP, APIs, or internal systems.
+- No JSON. No Markdown code fences.
+"""
+
+RAG_ACTION_FILL_PROMPT = """You map a user reply to missing procedure parameters.
+
+# Mission
+From the user message, recover values for parameters in the missing list only.
+Do not invent values. Preserve user-provided values exactly.
+
+# Output
+Return exactly one JSON object and nothing else (no Markdown fences, no commentary):
+
+{
+  "provided": [
+    {"name": "exact parameter name from the missing list", "value": "value from the user message"}
+  ]
+}
+
+# Rules
+- Include a parameter only when the user clearly provided its value.
+- Use the exact name from the missing list.
+- If nothing was provided, return {"provided": []}.
+"""
+
 
 def _clip(text: str, limit: int) -> str:
     text = " ".join(text.split())
@@ -399,6 +434,14 @@ def build_rag_present_prompt() -> str:
 
 def build_rag_action_extract_prompt() -> str:
     return RAG_ACTION_EXTRACT_PROMPT
+
+
+def build_rag_action_ask_prompt() -> str:
+    return RAG_ACTION_ASK_PROMPT
+
+
+def build_rag_action_fill_prompt() -> str:
+    return RAG_ACTION_FILL_PROMPT
 
 
 def build_present_result_prompt() -> str:

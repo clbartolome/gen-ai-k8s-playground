@@ -1,9 +1,10 @@
 """Process RAG requests classified as ACTION (create / execute).
 
-Fetches the matching knowledge-base article and asks the LLM to extract
-actionable fields: known/missing parameters, procedure steps, and follow-up
-details. Known values recovered from the user request are kept in pending
-so later turns do not ask for them again.
+Flow:
+1. Fetch the KB article and extract parameters, procedure, and follow-up.
+2. If required parameters are missing, ask only for those and keep state in pending.
+3. When the user provides them, merge into known parameters.
+4. Once complete, present information, procedure steps, and follow-up.
 """
 
 from __future__ import annotations
@@ -18,7 +19,9 @@ from config import RAG_MCP_TOOLS
 from itsm_mcp import ItsmMcpClient
 from llm import LLMClient
 from prompts import (
+    build_rag_action_ask_prompt,
     build_rag_action_extract_prompt,
+    build_rag_action_fill_prompt,
     build_rag_not_found_prompt,
 )
 
@@ -42,12 +45,35 @@ def run_rag_action(
     dialogue: list[dict[str, Any]] | None = None,
     pending: dict[str, Any] | None = None,
 ) -> RagActionResult:
-    """Search the KB, extract actionable fields, and return the chat reply."""
+    """Collect missing params first; then present procedure details."""
     log.info(
-        "RAG action started message_chars=%s dialogue_turns=%s",
+        "RAG action started message_chars=%s dialogue_turns=%s continuing=%s",
         len(user_message or ""),
         len(dialogue or []),
+        _is_rag_action_pending(pending),
     )
+    if _is_rag_action_pending(pending):
+        return _continue_collection(
+            user_message,
+            llm=llm,
+            dialogue=dialogue,
+            pending=pending or {},
+        )
+    return _start_action(
+        user_message,
+        llm=llm,
+        itsm_mcp=itsm_mcp,
+        dialogue=dialogue,
+    )
+
+
+def _start_action(
+    user_message: str,
+    *,
+    llm: LLMClient,
+    itsm_mcp: ItsmMcpClient,
+    dialogue: list[dict[str, Any]] | None,
+) -> RagActionResult:
     article = _fetch_article(user_message, itsm_mcp=itsm_mcp)
     if article is None:
         return RagActionResult(
@@ -67,41 +93,72 @@ def run_rag_action(
             + "\n[Article truncated to fit model context]"
         )
 
-    prior_known = _prior_known_parameters(pending)
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": build_rag_action_extract_prompt()},
-    ]
-    messages.extend(_dialogue_as_str(dialogue or []))
-    prior_block = ""
-    if prior_known:
-        prior_block = (
-            "Parameters already known from earlier turns "
-            f"(do not ask again):\n{json.dumps(prior_known, ensure_ascii=False)}\n\n"
-        )
-    messages.append(
-        {
-            "role": "user",
-            "content": (
-                f"User request:\n{user_message}\n\n"
-                f"{prior_block}"
-                f"Knowledge-base article:\n{article_text}"
-            ),
-        }
+    extracted = _extract_from_article(
+        user_message,
+        article_text=article_text,
+        llm=llm,
+        dialogue=dialogue,
     )
-    raw = llm.chat(messages).strip()
-    extracted = _parse_extraction(raw)
-    known = _merge_known(prior_known, extracted.get("known_parameters"))
+    known = _normalize_known(extracted.get("known_parameters"))
     missing = _normalize_missing(extracted.get("missing_parameters"), known)
     procedure = _normalize_procedure(extracted.get("procedure"))
     follow_up = _normalize_follow_up(extracted.get("follow_up"))
 
-    response = _format_reply(
-        known_parameters=known,
-        missing_parameters=missing,
+    return _next_result(
+        user_message,
+        llm=llm,
+        dialogue=dialogue,
+        known=known,
+        missing=missing,
         procedure=procedure,
         follow_up=follow_up,
     )
-    next_pending = {
+
+
+def _continue_collection(
+    user_message: str,
+    *,
+    llm: LLMClient,
+    dialogue: list[dict[str, Any]] | None,
+    pending: dict[str, Any],
+) -> RagActionResult:
+    known = _normalize_known(pending.get("known_parameters"))
+    missing = _normalize_missing(pending.get("missing_parameters"), known)
+    procedure = _normalize_procedure(pending.get("procedure"))
+    follow_up = _normalize_follow_up(pending.get("follow_up"))
+
+    if missing:
+        provided = _fill_missing_from_reply(
+            user_message,
+            missing=missing,
+            llm=llm,
+            dialogue=dialogue,
+        )
+        known = _merge_known(known, provided)
+        missing = _normalize_missing(missing, known)
+
+    return _next_result(
+        user_message,
+        llm=llm,
+        dialogue=dialogue,
+        known=known,
+        missing=missing,
+        procedure=procedure,
+        follow_up=follow_up,
+    )
+
+
+def _next_result(
+    user_message: str,
+    *,
+    llm: LLMClient,
+    dialogue: list[dict[str, Any]] | None,
+    known: list[dict[str, str]],
+    missing: list[dict[str, str]],
+    procedure: list[dict[str, Any]],
+    follow_up: list[str],
+) -> RagActionResult:
+    state = {
         "category": "RAG",
         "kind": "rag_action",
         "known_parameters": known,
@@ -109,24 +166,153 @@ def run_rag_action(
         "procedure": procedure,
         "follow_up": follow_up,
     }
-    action = "request_information" if missing else "reply"
-    log.info(
-        "RAG action extract done known=%s missing=%s action=%s",
-        len(known),
-        len(missing),
-        action,
-    )
+    if missing:
+        log.info(
+            "RAG action asking for missing=%s known=%s",
+            len(missing),
+            len(known),
+        )
+        return RagActionResult(
+            response=_ask_for_missing(
+                user_message,
+                missing=missing,
+                llm=llm,
+                dialogue=dialogue,
+            ),
+            pending=state,
+            action="request_information",
+        )
+
+    log.info("RAG action presenting procedure known=%s", len(known))
     return RagActionResult(
-        response=response,
-        pending=next_pending,
-        action=action,
+        response=_format_present(
+            known_parameters=known,
+            procedure=procedure,
+            follow_up=follow_up,
+        ),
+        pending=None,
+        action="reply",
     )
 
 
-def _prior_known_parameters(pending: dict[str, Any] | None) -> list[dict[str, str]]:
-    if not isinstance(pending, dict) or pending.get("kind") != "rag_action":
-        return []
-    return _normalize_known(pending.get("known_parameters"))
+def _extract_from_article(
+    user_message: str,
+    *,
+    article_text: str,
+    llm: LLMClient,
+    dialogue: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": build_rag_action_extract_prompt()},
+    ]
+    messages.extend(_dialogue_as_str(dialogue or []))
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                f"User request:\n{user_message}\n\n"
+                f"Knowledge-base article:\n{article_text}"
+            ),
+        }
+    )
+    raw = llm.chat(messages).strip()
+    return _parse_json_object(raw)
+
+
+def _ask_for_missing(
+    user_message: str,
+    *,
+    missing: list[dict[str, str]],
+    llm: LLMClient,
+    dialogue: list[dict[str, Any]] | None,
+) -> str:
+    missing_json = json.dumps(missing, ensure_ascii=False, indent=2)
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": build_rag_action_ask_prompt()},
+    ]
+    messages.extend(_dialogue_as_str(dialogue or []))
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                f"User request:\n{user_message}\n\n"
+                f"Missing parameters:\n{missing_json}"
+            ),
+        }
+    )
+    return llm.chat(messages).strip()
+
+
+def _fill_missing_from_reply(
+    user_message: str,
+    *,
+    missing: list[dict[str, str]],
+    llm: LLMClient,
+    dialogue: list[dict[str, Any]] | None,
+) -> list[dict[str, str]]:
+    missing_json = json.dumps(missing, ensure_ascii=False, indent=2)
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": build_rag_action_fill_prompt()},
+    ]
+    messages.extend(_dialogue_as_str(dialogue or []))
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                f"Missing parameters:\n{missing_json}\n\n"
+                f"User reply:\n{user_message}"
+            ),
+        }
+    )
+    raw = llm.chat(messages).strip()
+    data = _parse_json_object(raw)
+    allowed = {item["name"].casefold(): item["name"] for item in missing}
+    provided: list[dict[str, str]] = []
+    for item in _normalize_known(data.get("provided")):
+        key = item["name"].casefold()
+        if key not in allowed:
+            continue
+        provided.append({"name": allowed[key], "value": item["value"]})
+    return provided
+
+
+def _format_present(
+    *,
+    known_parameters: list[dict[str, str]],
+    procedure: list[dict[str, Any]],
+    follow_up: list[str],
+) -> str:
+    sections: list[str] = []
+
+    lines = ["## Information"]
+    if known_parameters:
+        for item in known_parameters:
+            lines.append(f"- {item['name']}: {item['value']}")
+    else:
+        lines.append("- No parameters were required for this procedure.")
+    sections.append("\n".join(lines))
+
+    lines = ["## Procedure"]
+    if procedure:
+        for item in procedure:
+            lines.append(f"{item['step']}. {item['detail']}")
+    else:
+        lines.append("- No procedure steps found in the article.")
+    sections.append("\n".join(lines))
+
+    lines = ["## Follow up"]
+    if follow_up:
+        for item in follow_up:
+            lines.append(f"- {item}")
+    else:
+        lines.append("- No follow-up details found in the article.")
+    sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
+
+
+def _is_rag_action_pending(pending: dict[str, Any] | None) -> bool:
+    return isinstance(pending, dict) and pending.get("kind") == "rag_action"
 
 
 def _merge_known(
@@ -188,7 +374,7 @@ def _normalize_missing(
         if key in known_keys or key in seen:
             continue
         detail = str(item.get("detail") or "").strip()
-        entry = {"name": name}
+        entry: dict[str, str] = {"name": name}
         if detail:
             entry["detail"] = detail
         out.append(entry)
@@ -234,53 +420,7 @@ def _normalize_follow_up(value: Any) -> list[str]:
     return out
 
 
-def _format_reply(
-    *,
-    known_parameters: list[dict[str, str]],
-    missing_parameters: list[dict[str, str]],
-    procedure: list[dict[str, Any]],
-    follow_up: list[str],
-) -> str:
-    sections: list[str] = []
-
-    if known_parameters:
-        lines = ["## Already provided"]
-        for item in known_parameters:
-            lines.append(f"- {item['name']}: {item['value']}")
-        sections.append("\n".join(lines))
-
-    lines = ["## Required information"]
-    if missing_parameters:
-        for item in missing_parameters:
-            detail = item.get("detail")
-            if detail:
-                lines.append(f"- {item['name']}: {detail}")
-            else:
-                lines.append(f"- {item['name']}")
-    else:
-        lines.append("- None. All required parameters are already available.")
-    sections.append("\n".join(lines))
-
-    lines = ["## Procedure"]
-    if procedure:
-        for item in procedure:
-            lines.append(f"{item['step']}. {item['detail']}")
-    else:
-        lines.append("- No procedure steps found in the article.")
-    sections.append("\n".join(lines))
-
-    lines = ["## Follow up"]
-    if follow_up:
-        for item in follow_up:
-            lines.append(f"- {item}")
-    else:
-        lines.append("- No follow-up details found in the article.")
-    sections.append("\n".join(lines))
-
-    return "\n\n".join(sections)
-
-
-def _parse_extraction(raw: str) -> dict[str, Any]:
+def _parse_json_object(raw: str) -> dict[str, Any]:
     cleaned = re.sub(r"<think>[\s\S]*?</think>", "", raw, flags=re.IGNORECASE)
     cleaned = re.sub(r"```(?:json)?\s*", "", cleaned)
     cleaned = cleaned.replace("```", "").strip()
@@ -293,12 +433,12 @@ def _parse_extraction(raw: str) -> dict[str, Any]:
 
     match = re.search(r"\{[\s\S]*\}", cleaned)
     if not match:
-        log.warning("RAG action extract: no JSON in LLM reply")
+        log.warning("RAG action: no JSON in LLM reply")
         return {}
     try:
         data = json.loads(match.group(0))
     except json.JSONDecodeError:
-        log.warning("RAG action extract: invalid JSON in LLM reply")
+        log.warning("RAG action: invalid JSON in LLM reply")
         return {}
     return data if isinstance(data, dict) else {}
 
