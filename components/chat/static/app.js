@@ -1,108 +1,330 @@
-const form = document.getElementById("chat-form");
-const messageInput = document.getElementById("message");
-const sendBtn = document.getElementById("send-btn");
-const messagesEl = document.getElementById("messages");
-const newThreadBtn = document.getElementById("new-thread-btn");
-const threadLabel = document.getElementById("thread-label");
+const STORAGE_KEY = "genai_slack_channel_v1";
 
-const THREAD_KEY = "genai_chat_thread_id";
+const workspace = document.querySelector(".workspace");
+const channelMessagesEl = document.getElementById("channel-messages");
+const channelEmptyEl = document.getElementById("channel-empty");
+const channelForm = document.getElementById("channel-form");
+const channelInput = document.getElementById("channel-input");
+const channelSend = document.getElementById("channel-send");
 
-function getThreadId() {
-  return sessionStorage.getItem(THREAD_KEY) || null;
-}
+const threadPanel = document.getElementById("thread-panel");
+const threadParentEl = document.getElementById("thread-parent");
+const threadRepliesEl = document.getElementById("thread-replies");
+const threadSubtitle = document.getElementById("thread-subtitle");
+const closeThreadBtn = document.getElementById("close-thread");
+const clearChannelBtn = document.getElementById("clear-channel");
+const threadForm = document.getElementById("thread-form");
+const threadInput = document.getElementById("thread-input");
+const threadSend = document.getElementById("thread-send");
 
-function setThreadId(threadId) {
-  if (threadId) {
-    sessionStorage.setItem(THREAD_KEY, threadId);
-  } else {
-    sessionStorage.removeItem(THREAD_KEY);
-  }
-  updateThreadLabel();
-}
+/** @type {{ messages: ChannelMessage[] }} */
+let state = loadState();
+/** @type {string | null} */
+let openThreadId = null;
+/** @type {Set<string>} */
+const busyParents = new Set();
 
-function clearThreadId() {
-  sessionStorage.removeItem(THREAD_KEY);
-  updateThreadLabel();
-}
-
-function shortThreadId(threadId) {
-  if (!threadId) return "New conversation";
-  return threadId.length > 12 ? `${threadId.slice(0, 8)}…` : threadId;
-}
-
-function updateThreadLabel() {
-  if (!threadLabel) return;
-  const threadId = getThreadId();
-  threadLabel.textContent = shortThreadId(threadId);
-  threadLabel.title = threadId || "No conversation yet — send a message to start one";
-}
-
-function showEmptyState() {
-  messagesEl.innerHTML = "";
-  const empty = document.createElement("div");
-  empty.className = "thread-empty";
-  empty.textContent = "Send a message to start the conversation.";
-  messagesEl.appendChild(empty);
-}
-
-function startNewConversation() {
-  clearThreadId();
-  showEmptyState();
-  messageInput.focus();
-}
+/**
+ * @typedef {{
+ *   id: string,
+ *   text: string,
+ *   createdAt: number,
+ *   agentThreadId: string | null,
+ *   replies: Reply[],
+ * }} ChannelMessage
+ *
+ * @typedef {{
+ *   id: string,
+ *   role: "user" | "agent" | "thought" | "error",
+ *   text: string,
+ *   createdAt: number,
+ * }} Reply
+ */
 
 if (typeof marked !== "undefined") {
-  marked.setOptions({
-    gfm: true,
-    breaks: true,
-  });
+  marked.setOptions({ gfm: true, breaks: true });
 }
 
-function scrollToBottom() {
-  messagesEl.scrollTop = messagesEl.scrollHeight;
-}
-
-function clearEmptyState() {
-  const empty = messagesEl.querySelector(".thread-empty");
-  if (empty) empty.remove();
-}
-
-function renderBody(role, text) {
-  const body = document.createElement("div");
-  body.className = "bubble-body";
-
-  // Only agent replies are treated as Markdown; keep other roles as plain text.
-  if (role === "agent" && typeof marked !== "undefined") {
-    const html = marked.parse(text || "");
-    body.classList.add("bubble-md");
-    body.innerHTML =
-      typeof DOMPurify !== "undefined"
-        ? DOMPurify.sanitize(html)
-        : html;
-  } else {
-    body.textContent = text;
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { messages: [] };
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.messages)) return { messages: [] };
+    return parsed;
+  } catch {
+    return { messages: [] };
   }
-  return body;
 }
 
-function addBubble(role, text, extraClass = "") {
-  clearEmptyState();
+function saveState() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
 
-  const bubble = document.createElement("div");
-  bubble.className = `bubble bubble-${role} ${extraClass}`.trim();
+function uid() {
+  return crypto.randomUUID
+    ? crypto.randomUUID()
+    : `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
 
-  const meta = document.createElement("span");
-  meta.className = "bubble-meta";
-  if (role === "user") meta.textContent = "You";
-  else if (role === "agent") meta.textContent = "Agent";
-  else if (role === "thought") meta.textContent = "Thinking";
-  else meta.textContent = "Error";
-  bubble.appendChild(meta);
-  bubble.appendChild(renderBody(role, text));
+function formatTime(ts) {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(ts));
+  } catch {
+    return "";
+  }
+}
 
-  messagesEl.appendChild(bubble);
-  scrollToBottom();
-  return bubble;
+function authorLabel(role) {
+  if (role === "user") return "Tú";
+  if (role === "agent") return "Agent";
+  if (role === "thought") return "Thinking";
+  return "Error";
+}
+
+function avatarInitial(role) {
+  if (role === "user") return "TÚ";
+  if (role === "agent") return "AI";
+  if (role === "thought") return "…";
+  return "!";
+}
+
+function renderMarkdown(text) {
+  if (typeof marked === "undefined") return escapeHtml(text || "");
+  const html = marked.parse(text || "");
+  return typeof DOMPurify !== "undefined" ? DOMPurify.sanitize(html) : html;
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function autosize(el) {
+  el.style.height = "auto";
+  el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+}
+
+function scrollChannelBottom() {
+  channelMessagesEl.scrollTop = channelMessagesEl.scrollHeight;
+}
+
+function scrollThreadBottom() {
+  threadRepliesEl.scrollTop = threadRepliesEl.scrollHeight;
+}
+
+function findMessage(parentId) {
+  return state.messages.find((m) => m.id === parentId) || null;
+}
+
+function visibleReplies(replies) {
+  return (replies || []).filter((r) => r.role !== "thought");
+}
+
+function buildMsgEl(opts) {
+  const {
+    role,
+    text,
+    createdAt,
+    markdown = false,
+    pending = false,
+    onClick = null,
+    active = false,
+    replyCount = 0,
+  } = opts;
+
+  const row = document.createElement("article");
+  row.className = `msg${pending ? " pending" : ""}${active ? " active-thread" : ""}`;
+  if (onClick) {
+    row.style.cursor = "pointer";
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("button, a")) return;
+      onClick();
+    });
+  }
+
+  const avatar = document.createElement("div");
+  avatar.className = `msg-avatar ${role}`;
+  avatar.textContent = avatarInitial(role);
+  avatar.setAttribute("aria-hidden", "true");
+  row.appendChild(avatar);
+
+  const body = document.createElement("div");
+  body.className = "msg-body";
+
+  const meta = document.createElement("div");
+  meta.className = "msg-meta";
+
+  const author = document.createElement("span");
+  author.className = "msg-author";
+  author.textContent = authorLabel(role);
+  if (role === "agent") {
+    const tag = document.createElement("span");
+    tag.className = "ai-tag";
+    tag.textContent = "AI";
+    author.appendChild(tag);
+  }
+  meta.appendChild(author);
+
+  const time = document.createElement("span");
+  time.className = "msg-time";
+  time.textContent = formatTime(createdAt);
+  meta.appendChild(time);
+  body.appendChild(meta);
+
+  const textEl = document.createElement("div");
+  textEl.className = `msg-text${markdown ? " md" : ""}${role === "thought" ? " thought" : ""}${role === "error" ? " error" : ""}`;
+  if (markdown && role === "agent") {
+    textEl.innerHTML = renderMarkdown(text);
+  } else {
+    textEl.textContent = text;
+  }
+  if (pending) {
+    const dots = document.createElement("span");
+    dots.className = "typing-dots";
+    dots.innerHTML = "<span></span><span></span><span></span>";
+    textEl.appendChild(dots);
+  }
+  body.appendChild(textEl);
+
+  if (replyCount > 0) {
+    const bar = document.createElement("button");
+    bar.type = "button";
+    bar.className = "reply-bar";
+    bar.addEventListener("click", (event) => {
+      event.stopPropagation();
+      onClick && onClick();
+    });
+
+    const faces = document.createElement("span");
+    faces.className = "reply-faces";
+    faces.innerHTML = "<span>AI</span>";
+    bar.appendChild(faces);
+
+    const label = document.createElement("span");
+    label.textContent =
+      replyCount === 1 ? "1 respuesta" : `${replyCount} respuestas`;
+    bar.appendChild(label);
+    body.appendChild(bar);
+  }
+
+  row.appendChild(body);
+  return row;
+}
+
+function renderChannel() {
+  const nearBottom =
+    channelMessagesEl.scrollHeight -
+      channelMessagesEl.scrollTop -
+      channelMessagesEl.clientHeight <
+    80;
+
+  [...channelMessagesEl.querySelectorAll(".msg")].forEach((el) => el.remove());
+
+  if (!state.messages.length) {
+    channelEmptyEl.hidden = false;
+    if (!channelEmptyEl.isConnected) {
+      channelMessagesEl.appendChild(channelEmptyEl);
+    }
+    return;
+  }
+
+  channelEmptyEl.hidden = true;
+
+  for (const msg of state.messages) {
+    const count = visibleReplies(msg.replies).length;
+    const row = buildMsgEl({
+      role: "user",
+      text: msg.text,
+      createdAt: msg.createdAt,
+      active: openThreadId === msg.id,
+      replyCount: count,
+      onClick: () => openThread(msg.id),
+    });
+    row.dataset.parentId = msg.id;
+    channelMessagesEl.appendChild(row);
+  }
+
+  if (nearBottom) scrollChannelBottom();
+}
+
+function renderThread(parentId) {
+  const msg = findMessage(parentId);
+  if (!msg) {
+    closeThread();
+    return;
+  }
+
+  threadParentEl.innerHTML = "";
+  threadParentEl.appendChild(
+    buildMsgEl({
+      role: "user",
+      text: msg.text,
+      createdAt: msg.createdAt,
+    })
+  );
+
+  threadRepliesEl.innerHTML = "";
+  const replies = msg.replies || [];
+  const count = visibleReplies(replies).length;
+
+  if (count > 0 || replies.some((r) => r.role === "thought")) {
+    const divider = document.createElement("div");
+    divider.className = "thread-divider";
+    divider.textContent =
+      count === 0
+        ? "Respuestas"
+        : count === 1
+          ? "1 respuesta"
+          : `${count} respuestas`;
+    threadRepliesEl.appendChild(divider);
+  }
+
+  for (const reply of replies) {
+    threadRepliesEl.appendChild(
+      buildMsgEl({
+        role: reply.role,
+        text: reply.text,
+        createdAt: reply.createdAt,
+        markdown: reply.role === "agent",
+      })
+    );
+  }
+
+  threadSubtitle.textContent =
+    count === 0
+      ? "Esperando respuesta del agente"
+      : count === 1
+        ? "1 respuesta"
+        : `${count} respuestas`;
+
+  scrollThreadBottom();
+}
+
+function openThread(parentId) {
+  const msg = findMessage(parentId);
+  if (!msg) return;
+
+  openThreadId = parentId;
+  threadPanel.hidden = false;
+  workspace.classList.add("thread-open");
+  renderChannel();
+  renderThread(parentId);
+  threadInput.focus();
+}
+
+function closeThread() {
+  openThreadId = null;
+  threadPanel.hidden = true;
+  workspace.classList.remove("thread-open");
+  renderChannel();
+  channelInput.focus();
 }
 
 async function pollJob(jobId, onThoughts) {
@@ -115,7 +337,6 @@ async function pollJob(jobId, onThoughts) {
       onThoughts(thoughts.slice(seen));
       seen = thoughts.length;
     }
-    if (data.thread_id) setThreadId(data.thread_id);
     if (data.status === "pending") {
       await new Promise((r) => setTimeout(r, 400));
       continue;
@@ -124,22 +345,33 @@ async function pollJob(jobId, onThoughts) {
   }
 }
 
-newThreadBtn.addEventListener("click", () => {
-  startNewConversation();
-});
+function appendReply(parentId, reply) {
+  const msg = findMessage(parentId);
+  if (!msg) return;
+  msg.replies.push(reply);
+  saveState();
+  if (openThreadId === parentId) renderThread(parentId);
+  renderChannel();
+}
 
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const message = messageInput.value.trim();
-  if (!message) return;
+function setAgentThreadId(parentId, agentThreadId) {
+  const msg = findMessage(parentId);
+  if (!msg || !agentThreadId) return;
+  msg.agentThreadId = agentThreadId;
+  saveState();
+}
 
-  sendBtn.disabled = true;
-  addBubble("user", message);
-  messageInput.value = "";
+async function runAgentTurn(parentId, message, { isNewThread }) {
+  const msg = findMessage(parentId);
+  if (!msg) return;
+
+  busyParents.add(parentId);
+  updateSendButtons();
 
   const payload = { message };
-  const threadId = getThreadId();
-  if (threadId) payload.thread_id = threadId;
+  if (!isNewThread && msg.agentThreadId) {
+    payload.thread_id = msg.agentThreadId;
+  }
 
   try {
     const startRes = await fetch("/ask", {
@@ -148,29 +380,161 @@ form.addEventListener("submit", async (event) => {
       body: JSON.stringify(payload),
     });
     const startData = await startRes.json();
-    if (!startRes.ok) throw new Error(startData.error || "Could not start request");
-    if (startData.thread_id) setThreadId(startData.thread_id);
+    if (!startRes.ok) throw new Error(startData.error || "No se pudo iniciar la solicitud");
+    if (startData.thread_id) setAgentThreadId(parentId, startData.thread_id);
 
     const result = await pollJob(startData.job_id, (newThoughts) => {
       newThoughts.forEach((item) => {
         const text = typeof item === "string" ? item : item.text;
-        if (text) addBubble("thought", text);
+        if (!text) return;
+        appendReply(parentId, {
+          id: uid(),
+          role: "thought",
+          text,
+          createdAt: Date.now(),
+        });
       });
     });
 
-    if (result.thread_id) setThreadId(result.thread_id);
+    if (result.thread_id) setAgentThreadId(parentId, result.thread_id);
+
+    // Drop ephemeral thinking bubbles once the turn settles.
+    const parent = findMessage(parentId);
+    if (parent) {
+      parent.replies = parent.replies.filter((r) => r.role !== "thought");
+      saveState();
+    }
 
     if (result.status === "error") {
-      addBubble("error", result.error);
+      appendReply(parentId, {
+        id: uid(),
+        role: "error",
+        text: result.error || "Error del agente",
+        createdAt: Date.now(),
+      });
     } else {
-      addBubble("agent", result.response);
+      appendReply(parentId, {
+        id: uid(),
+        role: "agent",
+        text: result.response || "",
+        createdAt: Date.now(),
+      });
     }
   } catch (err) {
-    addBubble("error", err.message);
+    appendReply(parentId, {
+      id: uid(),
+      role: "error",
+      text: err.message || String(err),
+      createdAt: Date.now(),
+    });
   } finally {
-    sendBtn.disabled = false;
-    messageInput.focus();
+    busyParents.delete(parentId);
+    updateSendButtons();
+  }
+}
+
+function updateSendButtons() {
+  channelSend.disabled = channelForm.dataset.sending === "1";
+  const threadBusy =
+    openThreadId &&
+    (busyParents.has(openThreadId) || threadForm.dataset.sending === "1");
+  threadSend.disabled = Boolean(threadBusy);
+}
+
+channelInput.addEventListener("input", () => autosize(channelInput));
+threadInput.addEventListener("input", () => autosize(threadInput));
+
+channelInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    channelForm.requestSubmit();
   }
 });
 
-updateThreadLabel();
+threadInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    threadForm.requestSubmit();
+  }
+});
+
+closeThreadBtn.addEventListener("click", () => closeThread());
+
+clearChannelBtn.addEventListener("click", () => {
+  if (state.messages.length && !confirm("¿Limpiar todos los mensajes del canal?")) {
+    return;
+  }
+  state = { messages: [] };
+  busyParents.clear();
+  localStorage.removeItem(STORAGE_KEY);
+  closeThread();
+  channelInput.value = "";
+  threadInput.value = "";
+  autosize(channelInput);
+  autosize(threadInput);
+  updateSendButtons();
+  renderChannel();
+  channelInput.focus();
+});
+
+channelForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const text = channelInput.value.trim();
+  if (!text) return;
+
+  channelForm.dataset.sending = "1";
+  updateSendButtons();
+
+  const parent = {
+    id: uid(),
+    text,
+    createdAt: Date.now(),
+    agentThreadId: null,
+    replies: [],
+  };
+  state.messages.push(parent);
+  saveState();
+
+  channelInput.value = "";
+  autosize(channelInput);
+  renderChannel();
+  scrollChannelBottom();
+  openThread(parent.id);
+
+  channelForm.dataset.sending = "0";
+  updateSendButtons();
+
+  await runAgentTurn(parent.id, text, { isNewThread: true });
+});
+
+threadForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!openThreadId) return;
+
+  const text = threadInput.value.trim();
+  if (!text) return;
+
+  const parent = findMessage(openThreadId);
+  if (!parent) return;
+  if (busyParents.has(parent.id)) return;
+
+  threadForm.dataset.sending = "1";
+  updateSendButtons();
+
+  appendReply(parent.id, {
+    id: uid(),
+    role: "user",
+    text,
+    createdAt: Date.now(),
+  });
+
+  threadInput.value = "";
+  autosize(threadInput);
+  threadForm.dataset.sending = "0";
+  updateSendButtons();
+
+  await runAgentTurn(parent.id, text, { isNewThread: false });
+});
+
+renderChannel();
+channelInput.focus();
