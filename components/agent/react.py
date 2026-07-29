@@ -19,6 +19,7 @@ from prompts import (
     build_openshift_prompt,
     build_out_context_prompt,
     build_present_result_prompt,
+    build_rag_intent_prompt,
     build_rag_not_found_prompt,
     build_rag_present_prompt,
     build_router_prompt,
@@ -28,6 +29,10 @@ log = logging.getLogger("agent.react")
 
 _CATEGORY_RE = re.compile(
     r"Category:\s*(OPENSHIFT|AAP|ITSM|RAG|OUT_CONTEXT)",
+    re.IGNORECASE,
+)
+_RAG_INTENT_RE = re.compile(
+    r"Intent:\s*(INFORMATION|ACTION)",
     re.IGNORECASE,
 )
 _VALID_CATEGORIES = frozenset(
@@ -61,6 +66,7 @@ class ReactAgent:
         self._aap_mcp = aap_mcp
         self._itsm_mcp = itsm_mcp
         self._router_prompt = build_router_prompt()
+        self._rag_intent_prompt = build_rag_intent_prompt()
         self._present_prompt = build_present_result_prompt()
         self._rag_present_prompt = build_rag_present_prompt()
         self._rag_not_found_prompt = build_rag_not_found_prompt()
@@ -130,6 +136,8 @@ class ReactAgent:
                 on_thought=on_thought,
             )
         if category == "RAG":
+            intent = self._classify_rag_intent(user_message, dialogue=prior)
+            log.info("RAG intent=%s", intent)
             if on_thought:
                 on_thought("Searching the knowledge base…")
             return TurnOutcome(
@@ -212,6 +220,32 @@ class ReactAgent:
             return previous_category
         log.warning("Router parse failed raw=%s", (raw or "")[:200])
         return "OUT_CONTEXT"
+
+    def _classify_rag_intent(
+        self,
+        user_message: str,
+        *,
+        dialogue: list[dict[str, str]] | None = None,
+    ) -> str:
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": self._rag_intent_prompt},
+        ]
+        messages.extend(dialogue or [])
+        messages.append({"role": "user", "content": user_message})
+        raw = self._llm.chat(messages)
+        log.info("RAG intent raw=%s", (raw or "").strip()[:300])
+        match = _RAG_INTENT_RE.search(raw or "")
+        if match:
+            return match.group(1).upper()
+        upper = (raw or "").upper()
+        for name in ("INFORMATION", "ACTION"):
+            if re.search(rf"\b{name}\b", upper):
+                return name
+        log.warning(
+            "RAG intent parse failed; defaulting to INFORMATION raw=%s",
+            (raw or "")[:200],
+        )
+        return "INFORMATION"
 
     def _out_context(
         self,

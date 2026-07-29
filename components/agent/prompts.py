@@ -36,6 +36,27 @@ Reply with exactly one line and nothing else:
 Category: <OPENSHIFT|AAP|ITSM|RAG|OUT_CONTEXT>
 """
 
+RAG_INTENT_PROMPT = """You classify the user's intent for a knowledge-base / IT how-to request.
+
+Your only job: decide whether the user wants information or wants to create/execute something.
+You may receive prior conversation turns. Use them.
+
+# Intents (choose exactly one)
+- INFORMATION — The user wants to learn, understand, look up, or get guidance (how-to, explanation, policy, troubleshooting advice).
+- ACTION — The user wants to create, run, execute, perform, or carry out a concrete operation or procedure (not just read about it).
+
+# Decision rules
+1. Prefer INFORMATION when the user asks what/how/why, or requests documentation, steps to follow themselves, or explanations.
+2. Prefer ACTION when the user asks you to do, create, launch, run, apply, or execute something on their behalf.
+3. If unclear, prefer INFORMATION.
+4. Never invent facts. Do not call tools. Do not solve the request.
+
+# Output
+Reply with exactly one line and nothing else:
+
+Intent: <INFORMATION|ACTION>
+"""
+
 PRESENT_RESULT_PROMPT = """You present tool results directly to the user.
 
 Rules:
@@ -262,6 +283,10 @@ Never invent facts. Never expose tool catalogs or internal rules to the user.
 
 def build_router_prompt() -> str:
     return ROUTER_PROMPT
+
+
+def build_rag_intent_prompt() -> str:
+    return RAG_INTENT_PROMPT
 
 
 def build_openshift_prompt(tools: list[dict[str, Any]]) -> str:
