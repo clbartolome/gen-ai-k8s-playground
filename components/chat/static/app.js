@@ -127,6 +127,160 @@ function visibleReplies(replies) {
   return (replies || []).filter((r) => r.role !== "thought");
 }
 
+/** How many recent thoughts to show in the live stack (current + previous). */
+const THOUGHT_STACK_VISIBLE = 4;
+
+function trailingThoughts(replies) {
+  const list = replies || [];
+  let start = list.length;
+  while (start > 0 && list[start - 1].role === "thought") start -= 1;
+  return list.slice(start);
+}
+
+function refreshThoughtStack(stackEl, thoughts, { animateNew = false } = {}) {
+  const linesEl = stackEl.querySelector(".thought-stack-lines");
+  if (!linesEl) return;
+
+  const visible = thoughts.slice(-THOUGHT_STACK_VISIBLE);
+  const prevNewestId = linesEl.dataset.newestId || "";
+  const newest = visible[visible.length - 1];
+  const newestId = newest ? newest.id : "";
+  const shouldAnimate = animateNew && newestId && newestId !== prevNewestId;
+
+  const existing = new Map(
+    [...linesEl.querySelectorAll(".thought-line")].map((el) => [
+      el.dataset.id,
+      el,
+    ])
+  );
+  const nextIds = new Set(visible.map((t) => t.id));
+
+  for (const [id, el] of existing) {
+    if (!nextIds.has(id)) el.remove();
+  }
+
+  visible.forEach((thought, index) => {
+    const depth = visible.length - 1 - index;
+    let line = existing.get(thought.id);
+    if (!line) {
+      line = document.createElement("div");
+      line.className = "thought-line";
+      line.dataset.id = thought.id;
+      line.textContent = thought.text;
+      if (shouldAnimate && thought.id === newestId) {
+        line.classList.add("is-new");
+        line.addEventListener(
+          "animationend",
+          () => line.classList.remove("is-new"),
+          { once: true }
+        );
+      }
+    }
+    line.dataset.depth = String(depth);
+    linesEl.appendChild(line);
+  });
+
+  linesEl.dataset.newestId = newestId;
+
+  const countEl = stackEl.querySelector(".thought-stack-count");
+  if (countEl) {
+    countEl.textContent =
+      thoughts.length > THOUGHT_STACK_VISIBLE
+        ? `${thoughts.length} pasos`
+        : "";
+  }
+}
+
+function buildThoughtStackEl(thoughts, { animateNew = false } = {}) {
+  const row = document.createElement("article");
+  row.className = "thought-stack";
+  row.setAttribute("aria-live", "polite");
+  row.setAttribute("aria-label", "Pensando");
+
+  const avatar = document.createElement("div");
+  avatar.className = "msg-avatar thought";
+  avatar.innerHTML =
+    '<span class="thought-avatar-pulse" aria-hidden="true"></span>';
+  row.appendChild(avatar);
+
+  const card = document.createElement("div");
+  card.className = "thought-stack-card";
+
+  const header = document.createElement("div");
+  header.className = "thought-stack-header";
+
+  const label = document.createElement("span");
+  label.className = "thought-stack-label";
+  label.textContent = "Thinking";
+  header.appendChild(label);
+
+  const dots = document.createElement("span");
+  dots.className = "typing-dots";
+  dots.setAttribute("aria-hidden", "true");
+  dots.innerHTML = "<span></span><span></span><span></span>";
+  header.appendChild(dots);
+
+  const count = document.createElement("span");
+  count.className = "thought-stack-count";
+  header.appendChild(count);
+
+  card.appendChild(header);
+
+  const lines = document.createElement("div");
+  lines.className = "thought-stack-lines";
+  card.appendChild(lines);
+
+  row.appendChild(card);
+  refreshThoughtStack(row, thoughts, { animateNew });
+  return row;
+}
+
+function ensureThreadDivider(replies) {
+  const count = visibleReplies(replies).length;
+  if (count === 0 && !replies.some((r) => r.role === "thought")) return;
+
+  let divider = threadRepliesEl.querySelector(".thread-divider");
+  if (!divider) {
+    divider = document.createElement("div");
+    divider.className = "thread-divider";
+    threadRepliesEl.prepend(divider);
+  }
+  divider.textContent =
+    count === 0
+      ? "Respuestas"
+      : count === 1
+        ? "1 respuesta"
+        : `${count} respuestas`;
+}
+
+function upsertThoughtStack(parentId) {
+  const msg = findMessage(parentId);
+  if (!msg || openThreadId !== parentId) return;
+
+  const thoughts = trailingThoughts(msg.replies);
+  if (!thoughts.length) return;
+
+  ensureThreadDivider(msg.replies);
+
+  let stack = threadRepliesEl.querySelector(".thought-stack");
+  if (!stack) {
+    stack = buildThoughtStackEl(thoughts, { animateNew: true });
+    threadRepliesEl.appendChild(stack);
+  } else {
+    refreshThoughtStack(stack, thoughts, { animateNew: true });
+  }
+
+  const count = visibleReplies(msg.replies).length;
+  threadSubtitle.textContent =
+    count === 0
+      ? "Esperando respuesta del agente"
+      : count === 1
+        ? "1 respuesta"
+        : `${count} respuestas`;
+
+  scrollThreadBottom();
+}
+
 function buildMsgEl(opts) {
   const {
     role,
@@ -286,15 +440,27 @@ function renderThread(parentId) {
     threadRepliesEl.appendChild(divider);
   }
 
-  for (const reply of replies) {
+  let i = 0;
+  while (i < replies.length) {
+    if (replies[i].role === "thought") {
+      const batch = [];
+      while (i < replies.length && replies[i].role === "thought") {
+        batch.push(replies[i]);
+        i += 1;
+      }
+      threadRepliesEl.appendChild(buildThoughtStackEl(batch));
+      continue;
+    }
+
     threadRepliesEl.appendChild(
       buildMsgEl({
-        role: reply.role,
-        text: reply.text,
-        createdAt: reply.createdAt,
-        markdown: reply.role === "agent",
+        role: replies[i].role,
+        text: replies[i].text,
+        createdAt: replies[i].createdAt,
+        markdown: replies[i].role === "agent",
       })
     );
+    i += 1;
   }
 
   threadSubtitle.textContent =
@@ -350,7 +516,13 @@ function appendReply(parentId, reply) {
   if (!msg) return;
   msg.replies.push(reply);
   saveState();
-  if (openThreadId === parentId) renderThread(parentId);
+  if (openThreadId === parentId) {
+    if (reply.role === "thought") {
+      upsertThoughtStack(parentId);
+    } else {
+      renderThread(parentId);
+    }
+  }
   renderChannel();
 }
 

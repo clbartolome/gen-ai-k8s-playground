@@ -329,25 +329,17 @@ def _execute_procedure(
         if action not in registry.invokers:
             log.warning("RAG action unknown tool action=%s", action)
             failure = f"Could not map step {step_num} to an available operation ({action})."
-            accumulated["steps_log"].append(
-                {
-                    "step": step_num,
-                    "detail": detail,
-                    "tool": action,
-                    "ok": False,
-                    "result_summary": failure,
-                }
-            )
-            return RagActionResult(
-                response=_explain_error(
-                    user_message,
-                    llm=llm,
-                    dialogue=dialogue,
-                    step=step,
-                    failure=failure,
-                ),
-                pending=None,
-                action="reply",
+            return _abort_procedure(
+                user_message,
+                llm=llm,
+                dialogue=dialogue,
+                step=step,
+                failure=failure,
+                accumulated=accumulated,
+                step_num=step_num,
+                detail=detail,
+                tool=action,
+                on_thought=on_thought,
             )
 
         if on_thought:
@@ -356,49 +348,37 @@ def _execute_procedure(
             result = registry.invokers[action](action, arguments)
         except Exception as exc:
             log.exception("RAG action tool failed action=%s", action)
-            failure = str(exc)
-            accumulated["steps_log"].append(
-                {
-                    "step": step_num,
-                    "detail": detail,
-                    "tool": action,
-                    "ok": False,
-                    "result_summary": failure,
-                }
-            )
-            return RagActionResult(
-                response=_explain_error(
-                    user_message,
-                    llm=llm,
-                    dialogue=dialogue,
-                    step=step,
-                    failure=failure,
-                ),
-                pending=None,
-                action="reply",
+            return _abort_procedure(
+                user_message,
+                llm=llm,
+                dialogue=dialogue,
+                step=step,
+                failure=str(exc),
+                accumulated=accumulated,
+                step_num=step_num,
+                detail=detail,
+                tool=action,
+                on_thought=on_thought,
             )
 
         if _result_is_error(result):
             failure = _format_result(result)
-            accumulated["steps_log"].append(
-                {
-                    "step": step_num,
-                    "detail": detail,
-                    "tool": action,
-                    "ok": False,
-                    "result_summary": failure[:500],
-                }
+            log.warning(
+                "RAG action tool returned error action=%s step=%s",
+                action,
+                step_num,
             )
-            return RagActionResult(
-                response=_explain_error(
-                    user_message,
-                    llm=llm,
-                    dialogue=dialogue,
-                    step=step,
-                    failure=failure,
-                ),
-                pending=None,
-                action="reply",
+            return _abort_procedure(
+                user_message,
+                llm=llm,
+                dialogue=dialogue,
+                step=step,
+                failure=failure,
+                accumulated=accumulated,
+                step_num=step_num,
+                detail=detail,
+                tool=action,
+                on_thought=on_thought,
             )
 
         derived = _merge_derived_from_result(
@@ -580,6 +560,44 @@ def _summarize(
     return llm.chat(messages).strip()
 
 
+def _abort_procedure(
+    user_message: str,
+    *,
+    llm: LLMClient,
+    dialogue: list[dict[str, Any]] | None,
+    step: dict[str, Any],
+    failure: str,
+    accumulated: dict[str, Any],
+    step_num: int,
+    detail: str,
+    tool: str | None,
+    on_thought: ThoughtCallback | None,
+) -> RagActionResult:
+    """Stop the whole procedure on the first failed step; never continue."""
+    accumulated["steps_log"].append(
+        {
+            "step": step_num,
+            "detail": detail,
+            "tool": tool,
+            "ok": False,
+            "result_summary": failure[:500],
+        }
+    )
+    if on_thought:
+        on_thought("A step failed; stopping the procedure…")
+    return RagActionResult(
+        response=_explain_error(
+            user_message,
+            llm=llm,
+            dialogue=dialogue,
+            step=step,
+            failure=failure,
+        ),
+        pending=None,
+        action="reply",
+    )
+
+
 def _explain_error(
     user_message: str,
     *,
@@ -592,6 +610,7 @@ def _explain_error(
         "user_request": user_message,
         "failed_step": step,
         "failure_detail": failure[:2_000],
+        "procedure_aborted": True,
     }
     messages: list[dict[str, str]] = [
         {"role": "system", "content": build_rag_action_error_prompt()},
@@ -607,11 +626,27 @@ def _explain_error(
 
 
 def _result_is_error(result: Any) -> bool:
-    if isinstance(result, dict):
-        if result.get("isError") is True or result.get("is_error") is True:
-            return True
-        if "error" in result and result.get("error"):
-            return True
+    if not isinstance(result, dict):
+        return False
+    if result.get("isError") is True or result.get("is_error") is True:
+        return True
+    if result.get("success") is False or result.get("ok") is False:
+        return True
+    if result.get("error"):
+        return True
+    raw = result.get("raw")
+    if isinstance(raw, dict) and (
+        raw.get("isError") is True or raw.get("is_error") is True
+    ):
+        return True
+    status = result.get("status")
+    if isinstance(status, str) and status.strip().lower() in {
+        "error",
+        "failed",
+        "failure",
+        "rejected",
+    }:
+        return True
     return False
 
 

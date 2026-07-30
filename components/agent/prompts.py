@@ -192,14 +192,14 @@ Return exactly one JSON object and nothing else (no Markdown fences, no commenta
 RAG_ACTION_ERROR_PROMPT = """You explain a failed procedure step to the user.
 
 # Mission
-Tell the user politely that the procedure could not be completed because a step failed.
-Use only the failure details provided. Do not invent success.
+Tell the user politely that the procedure was aborted because a step failed.
+Nothing after that step was executed. Do not invent partial success or claim the request completed.
 
 # Rules
 - Reply in the same language as the user.
-- Be clear and concise. Say what could not be completed and include the relevant detail.
+- Be clear and concise. Say that there was a problem, that the procedure stopped, and include the relevant failure detail.
 - Do not mention tools, MCP, APIs, or internal systems by technical name unless the failure text already does.
-- Suggest one practical next step when appropriate.
+- Suggest one practical next step when appropriate (for example retry or provide corrected data).
 - No JSON. No Markdown code fences.
 """
 

@@ -213,6 +213,7 @@ class ItsmMcpClient:
     def _normalize_tool_result(result: Any) -> Any:
         if not isinstance(result, dict):
             return result
+        is_error = bool(result.get("isError") or result.get("is_error"))
         content = result.get("content")
         if not isinstance(content, list):
             return result
@@ -224,6 +225,15 @@ class ItsmMcpClient:
             return result
         merged = "\n".join(texts)
         try:
-            return json.loads(merged)
+            parsed: Any = json.loads(merged)
         except json.JSONDecodeError:
-            return {"text": merged, "raw": result}
+            parsed = {"text": merged, "raw": result}
+        if not is_error:
+            return parsed
+        if isinstance(parsed, dict):
+            out = dict(parsed)
+            out["isError"] = True
+            if not out.get("error"):
+                out["error"] = merged or "Tool returned an error"
+            return out
+        return {"isError": True, "error": merged or "Tool returned an error", "data": parsed}
