@@ -144,11 +144,8 @@ class ReactAgent:
                     user_message,
                     llm=self._llm,
                     itsm_mcp=self._itsm_mcp,
-                    openshift_mcp=self._openshift_mcp,
-                    aap_mcp=self._aap_mcp,
                     dialogue=prior,
                     pending=pending,
-                    on_thought=on_thought,
                 )
                 return TurnOutcome(
                     response=result.response,
@@ -165,11 +162,8 @@ class ReactAgent:
                     user_message,
                     llm=self._llm,
                     itsm_mcp=self._itsm_mcp,
-                    openshift_mcp=self._openshift_mcp,
-                    aap_mcp=self._aap_mcp,
                     dialogue=prior,
                     pending=pending,
-                    on_thought=on_thought,
                 )
                 return TurnOutcome(
                     response=result.response,

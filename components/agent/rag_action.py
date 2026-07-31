@@ -3,9 +3,8 @@
 Flow:
 1. Fetch the KB article and extract parameters, procedure, and follow-up.
 2. If required parameters are missing, ask only for those and keep state in pending.
-3. When parameters are complete, execute each procedure step via MCP tools.
-4. On tool error, stop and explain politely; on success, merge results into state.
-5. After all steps, compose a summary using accumulated state and follow-up.
+3. When the user provides them, merge into known parameters.
+4. Once complete, present information, procedure steps, and follow-up.
 """
 
 from __future__ import annotations
@@ -14,31 +13,21 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
-from aap_mcp import AapMcpClient
 from config import RAG_MCP_TOOLS
 from itsm_mcp import ItsmMcpClient
 from llm import LLMClient
-from openshift_mcp import OpenShiftMcpClient
 from prompts import (
     build_rag_action_ask_prompt,
-    build_rag_action_error_prompt,
     build_rag_action_extract_prompt,
     build_rag_action_fill_prompt,
-    build_rag_action_merge_prompt,
-    build_rag_action_step_prompt,
-    build_rag_action_summary_prompt,
     build_rag_not_found_prompt,
 )
 
 log = logging.getLogger("agent.rag_action")
 
 _MAX_ARTICLE_CHARS = 12_000
-_MAX_RESULT_CHARS = 8_000
-
-InvokeFn = Callable[[str, dict[str, Any]], Any]
-ThoughtCallback = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -48,34 +37,20 @@ class RagActionResult:
     action: str = "reply"
 
 
-@dataclass(frozen=True)
-class _ToolRegistry:
-    tools: list[dict[str, Any]]
-    invokers: dict[str, InvokeFn]
-
-
 def run_rag_action(
     user_message: str,
     *,
     llm: LLMClient,
     itsm_mcp: ItsmMcpClient,
-    openshift_mcp: OpenShiftMcpClient,
-    aap_mcp: AapMcpClient,
     dialogue: list[dict[str, Any]] | None = None,
     pending: dict[str, Any] | None = None,
-    on_thought: ThoughtCallback | None = None,
 ) -> RagActionResult:
-    """Collect missing params, then execute the procedure with MCP tools."""
+    """Collect missing params first; then present procedure details."""
     log.info(
         "RAG action started message_chars=%s dialogue_turns=%s continuing=%s",
         len(user_message or ""),
         len(dialogue or []),
         _is_rag_action_pending(pending),
-    )
-    registry = _build_tool_registry(
-        openshift_mcp=openshift_mcp,
-        aap_mcp=aap_mcp,
-        itsm_mcp=itsm_mcp,
     )
     if _is_rag_action_pending(pending):
         return _continue_collection(
@@ -83,16 +58,12 @@ def run_rag_action(
             llm=llm,
             dialogue=dialogue,
             pending=pending or {},
-            registry=registry,
-            on_thought=on_thought,
         )
     return _start_action(
         user_message,
         llm=llm,
         itsm_mcp=itsm_mcp,
         dialogue=dialogue,
-        registry=registry,
-        on_thought=on_thought,
     )
 
 
@@ -102,11 +73,7 @@ def _start_action(
     llm: LLMClient,
     itsm_mcp: ItsmMcpClient,
     dialogue: list[dict[str, Any]] | None,
-    registry: _ToolRegistry,
-    on_thought: ThoughtCallback | None,
 ) -> RagActionResult:
-    if on_thought:
-        on_thought("Searching the knowledge base for the procedure…")
     article = _fetch_article(user_message, itsm_mcp=itsm_mcp)
     if article is None:
         return RagActionResult(
@@ -126,8 +93,6 @@ def _start_action(
             + "\n[Article truncated to fit model context]"
         )
 
-    if on_thought:
-        on_thought("Extracting procedure details…")
     extracted = _extract_from_article(
         user_message,
         article_text=article_text,
@@ -147,8 +112,6 @@ def _start_action(
         missing=missing,
         procedure=procedure,
         follow_up=follow_up,
-        registry=registry,
-        on_thought=on_thought,
     )
 
 
@@ -158,8 +121,6 @@ def _continue_collection(
     llm: LLMClient,
     dialogue: list[dict[str, Any]] | None,
     pending: dict[str, Any],
-    registry: _ToolRegistry,
-    on_thought: ThoughtCallback | None,
 ) -> RagActionResult:
     known = _normalize_known(pending.get("known_parameters"))
     missing = _normalize_missing(pending.get("missing_parameters"), known)
@@ -167,8 +128,6 @@ def _continue_collection(
     follow_up = _normalize_follow_up(pending.get("follow_up"))
 
     if missing:
-        if on_thought:
-            on_thought("Checking the details you provided…")
         provided = _fill_missing_from_reply(
             user_message,
             missing=missing,
@@ -186,8 +145,6 @@ def _continue_collection(
         missing=missing,
         procedure=procedure,
         follow_up=follow_up,
-        registry=registry,
-        on_thought=on_thought,
     )
 
 
@@ -200,8 +157,6 @@ def _next_result(
     missing: list[dict[str, str]],
     procedure: list[dict[str, Any]],
     follow_up: list[str],
-    registry: _ToolRegistry,
-    on_thought: ThoughtCallback | None,
 ) -> RagActionResult:
     state = {
         "category": "RAG",
@@ -217,8 +172,6 @@ def _next_result(
             len(missing),
             len(known),
         )
-        if on_thought:
-            on_thought("Asking for the remaining required information…")
         return RagActionResult(
             response=_ask_for_missing(
                 user_message,
@@ -230,433 +183,16 @@ def _next_result(
             action="request_information",
         )
 
-    return _execute_procedure(
-        user_message,
-        llm=llm,
-        dialogue=dialogue,
-        known=known,
-        procedure=procedure,
-        follow_up=follow_up,
-        registry=registry,
-        on_thought=on_thought,
-    )
-
-
-def _execute_procedure(
-    user_message: str,
-    *,
-    llm: LLMClient,
-    dialogue: list[dict[str, Any]] | None,
-    known: list[dict[str, str]],
-    procedure: list[dict[str, Any]],
-    follow_up: list[str],
-    registry: _ToolRegistry,
-    on_thought: ThoughtCallback | None,
-) -> RagActionResult:
-    accumulated: dict[str, Any] = {
-        "parameters": known,
-        "derived": {},
-        "steps_log": [],
-    }
-    total = len(procedure) or 1
-
-    if not procedure:
-        log.info("RAG action has no procedure steps; summarizing only")
-        if on_thought:
-            on_thought("No executable steps found; preparing the summary…")
-        return RagActionResult(
-            response=_summarize(
-                user_message,
-                llm=llm,
-                dialogue=dialogue,
-                accumulated=accumulated,
-                follow_up=follow_up,
-            ),
-            pending=None,
-            action="reply",
-        )
-
-    if not registry.tools:
-        log.warning("RAG action execution has no MCP tools available")
-        return RagActionResult(
-            response=_explain_error(
-                user_message,
-                llm=llm,
-                dialogue=dialogue,
-                step={"step": 1, "detail": "Procedure execution"},
-                failure=(
-                    "No operations tools are available right now to run this procedure."
-                ),
-            ),
-            pending=None,
-            action="reply",
-        )
-
-    for index, step in enumerate(procedure, start=1):
-        step_num = int(step.get("step") or index)
-        detail = str(step.get("detail") or "").strip()
-        if on_thought:
-            on_thought(f"Working on step {index}/{total}…")
-
-        decision = _decide_step(
-            user_message,
-            step=step,
-            accumulated=accumulated,
-            llm=llm,
-            tools=registry.tools,
-        )
-        action = str(decision.get("action") or "").strip()
-        arguments = decision.get("arguments") or {}
-        if not isinstance(arguments, dict):
-            arguments = {}
-        thought = str(decision.get("thought") or "").strip()
-        if thought and on_thought:
-            on_thought(thought)
-
-        if action in {"", "skip"}:
-            accumulated["steps_log"].append(
-                {
-                    "step": step_num,
-                    "detail": detail,
-                    "tool": None,
-                    "ok": True,
-                    "skipped": True,
-                    "result_summary": thought or "No tool needed for this step.",
-                }
-            )
-            continue
-
-        if action not in registry.invokers:
-            log.warning("RAG action unknown tool action=%s", action)
-            failure = f"Could not map step {step_num} to an available operation ({action})."
-            return _abort_procedure(
-                user_message,
-                llm=llm,
-                dialogue=dialogue,
-                step=step,
-                failure=failure,
-                accumulated=accumulated,
-                step_num=step_num,
-                detail=detail,
-                tool=action,
-                on_thought=on_thought,
-            )
-
-        if on_thought:
-            on_thought(f"Calling tool “{action}”…")
-        try:
-            result = registry.invokers[action](action, arguments)
-        except Exception as exc:
-            log.exception("RAG action tool failed action=%s", action)
-            return _abort_procedure(
-                user_message,
-                llm=llm,
-                dialogue=dialogue,
-                step=step,
-                failure=str(exc),
-                accumulated=accumulated,
-                step_num=step_num,
-                detail=detail,
-                tool=action,
-                on_thought=on_thought,
-            )
-
-        if _result_is_error(result):
-            failure = _format_result(result)
-            log.warning(
-                "RAG action tool returned error action=%s step=%s",
-                action,
-                step_num,
-            )
-            return _abort_procedure(
-                user_message,
-                llm=llm,
-                dialogue=dialogue,
-                step=step,
-                failure=failure,
-                accumulated=accumulated,
-                step_num=step_num,
-                detail=detail,
-                tool=action,
-                on_thought=on_thought,
-            )
-
-        derived = _merge_derived_from_result(
-            result,
-            llm=llm,
-            existing=accumulated["derived"],
-        )
-        accumulated["derived"] = derived
-        accumulated["steps_log"].append(
-            {
-                "step": step_num,
-                "detail": detail,
-                "tool": action,
-                "ok": True,
-                "arguments": arguments,
-                "result_summary": _format_result(result)[:500],
-            }
-        )
-        if on_thought:
-            on_thought(f"Step {index}/{total} completed.")
-
-    if on_thought:
-        on_thought("Preparing the final summary…")
+    log.info("RAG action presenting procedure known=%s", len(known))
     return RagActionResult(
-        response=_summarize(
-            user_message,
-            llm=llm,
-            dialogue=dialogue,
-            accumulated=accumulated,
+        response=_format_present(
+            known_parameters=known,
+            procedure=procedure,
             follow_up=follow_up,
         ),
         pending=None,
         action="reply",
     )
-
-
-def _build_tool_registry(
-    *,
-    openshift_mcp: OpenShiftMcpClient,
-    aap_mcp: AapMcpClient,
-    itsm_mcp: ItsmMcpClient,
-) -> _ToolRegistry:
-    tools: list[dict[str, Any]] = []
-    invokers: dict[str, InvokeFn] = {}
-
-    sources: list[tuple[str, Callable[[], list[dict[str, Any]]], InvokeFn]] = [
-        ("openshift", openshift_mcp.get_tools, openshift_mcp.invoke),
-        ("aap", aap_mcp.list_tools, aap_mcp.call_tool),
-        ("itsm", itsm_mcp.list_tools, itsm_mcp.call_tool),
-    ]
-    for source, list_fn, invoke in sources:
-        try:
-            listed = list_fn()
-        except Exception:
-            log.exception("RAG action failed listing tools source=%s", source)
-            continue
-        if not isinstance(listed, list):
-            continue
-        for tool in listed:
-            if not isinstance(tool, dict):
-                continue
-            name = tool.get("name")
-            if not isinstance(name, str) or not name:
-                continue
-            if name in invokers:
-                log.warning(
-                    "RAG action tool name collision name=%s source=%s keeping first",
-                    name,
-                    source,
-                )
-                continue
-            tools.append(tool)
-            invokers[name] = invoke
-
-    log.info(
-        "RAG action tool registry count=%s names=%s",
-        len(tools),
-        [t.get("name") for t in tools],
-    )
-    return _ToolRegistry(tools=tools, invokers=invokers)
-
-
-def _decide_step(
-    user_message: str,
-    *,
-    step: dict[str, Any],
-    accumulated: dict[str, Any],
-    llm: LLMClient,
-    tools: list[dict[str, Any]],
-) -> dict[str, Any]:
-    payload = {
-        "user_request": user_message,
-        "current_step": step,
-        "accumulated_state": {
-            "parameters": accumulated.get("parameters") or [],
-            "derived": accumulated.get("derived") or {},
-            "completed_steps": [
-                {
-                    "step": item.get("step"),
-                    "tool": item.get("tool"),
-                    "ok": item.get("ok"),
-                    "result_summary": item.get("result_summary"),
-                }
-                for item in (accumulated.get("steps_log") or [])
-            ],
-        },
-    }
-    messages = [
-        {"role": "system", "content": build_rag_action_step_prompt(tools)},
-        {
-            "role": "user",
-            "content": json.dumps(payload, ensure_ascii=False, default=str),
-        },
-    ]
-    raw = llm.chat(messages).strip()
-    data = _parse_json_object(raw)
-    return data if data else {"action": "skip", "arguments": {}, "thought": "No decision"}
-
-
-def _merge_derived_from_result(
-    result: Any,
-    *,
-    llm: LLMClient,
-    existing: dict[str, Any],
-) -> dict[str, Any]:
-    merged = dict(existing) if isinstance(existing, dict) else {}
-    observation = _format_result(result)
-    if len(observation) > _MAX_RESULT_CHARS:
-        observation = observation[:_MAX_RESULT_CHARS] + "\n[truncated]"
-    messages = [
-        {"role": "system", "content": build_rag_action_merge_prompt()},
-        {
-            "role": "user",
-            "content": (
-                f"Existing derived state:\n"
-                f"{json.dumps(merged, ensure_ascii=False, default=str)}\n\n"
-                f"Tool result:\n{observation}"
-            ),
-        },
-    ]
-    raw = llm.chat(messages).strip()
-    data = _parse_json_object(raw)
-    derived = data.get("derived") if isinstance(data.get("derived"), dict) else {}
-    for key, value in derived.items():
-        text_key = str(key).strip()
-        if not text_key or value is None:
-            continue
-        text_value = str(value).strip()
-        if text_value:
-            merged[text_key] = text_value
-    return merged
-
-
-def _summarize(
-    user_message: str,
-    *,
-    llm: LLMClient,
-    dialogue: list[dict[str, Any]] | None,
-    accumulated: dict[str, Any],
-    follow_up: list[str],
-) -> str:
-    payload = {
-        "user_request": user_message,
-        "parameters": accumulated.get("parameters") or [],
-        "derived": accumulated.get("derived") or {},
-        "steps_log": accumulated.get("steps_log") or [],
-        "follow_up": follow_up,
-    }
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": build_rag_action_summary_prompt()},
-    ]
-    messages.extend(_dialogue_as_str(dialogue or []))
-    messages.append(
-        {
-            "role": "user",
-            "content": json.dumps(payload, ensure_ascii=False, default=str),
-        }
-    )
-    return llm.chat(messages).strip()
-
-
-def _abort_procedure(
-    user_message: str,
-    *,
-    llm: LLMClient,
-    dialogue: list[dict[str, Any]] | None,
-    step: dict[str, Any],
-    failure: str,
-    accumulated: dict[str, Any],
-    step_num: int,
-    detail: str,
-    tool: str | None,
-    on_thought: ThoughtCallback | None,
-) -> RagActionResult:
-    """Stop the whole procedure on the first failed step; never continue."""
-    accumulated["steps_log"].append(
-        {
-            "step": step_num,
-            "detail": detail,
-            "tool": tool,
-            "ok": False,
-            "result_summary": failure[:500],
-        }
-    )
-    if on_thought:
-        on_thought("A step failed; stopping the procedure…")
-    return RagActionResult(
-        response=_explain_error(
-            user_message,
-            llm=llm,
-            dialogue=dialogue,
-            step=step,
-            failure=failure,
-        ),
-        pending=None,
-        action="reply",
-    )
-
-
-def _explain_error(
-    user_message: str,
-    *,
-    llm: LLMClient,
-    dialogue: list[dict[str, Any]] | None,
-    step: dict[str, Any],
-    failure: str,
-) -> str:
-    payload = {
-        "user_request": user_message,
-        "failed_step": step,
-        "failure_detail": failure[:2_000],
-        "procedure_aborted": True,
-    }
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": build_rag_action_error_prompt()},
-    ]
-    messages.extend(_dialogue_as_str(dialogue or []))
-    messages.append(
-        {
-            "role": "user",
-            "content": json.dumps(payload, ensure_ascii=False, default=str),
-        }
-    )
-    return llm.chat(messages).strip()
-
-
-def _result_is_error(result: Any) -> bool:
-    if not isinstance(result, dict):
-        return False
-    if result.get("isError") is True or result.get("is_error") is True:
-        return True
-    if result.get("success") is False or result.get("ok") is False:
-        return True
-    if result.get("error"):
-        return True
-    raw = result.get("raw")
-    if isinstance(raw, dict) and (
-        raw.get("isError") is True or raw.get("is_error") is True
-    ):
-        return True
-    status = result.get("status")
-    if isinstance(status, str) and status.strip().lower() in {
-        "error",
-        "failed",
-        "failure",
-        "rejected",
-    }:
-        return True
-    return False
-
-
-def _format_result(result: Any) -> str:
-    if isinstance(result, str):
-        return result
-    try:
-        return json.dumps(result, ensure_ascii=False, indent=2, default=str)
-    except TypeError:
-        return str(result)
 
 
 def _extract_from_article(
@@ -738,6 +274,41 @@ def _fill_missing_from_reply(
             continue
         provided.append({"name": allowed[key], "value": item["value"]})
     return provided
+
+
+def _format_present(
+    *,
+    known_parameters: list[dict[str, str]],
+    procedure: list[dict[str, Any]],
+    follow_up: list[str],
+) -> str:
+    sections: list[str] = []
+
+    lines = ["## Information"]
+    if known_parameters:
+        for item in known_parameters:
+            lines.append(f"- {item['name']}: {item['value']}")
+    else:
+        lines.append("- No parameters were required for this procedure.")
+    sections.append("\n".join(lines))
+
+    lines = ["## Procedure"]
+    if procedure:
+        for item in procedure:
+            lines.append(f"{item['step']}. {item['detail']}")
+    else:
+        lines.append("- No procedure steps found in the article.")
+    sections.append("\n".join(lines))
+
+    lines = ["## Follow up"]
+    if follow_up:
+        for item in follow_up:
+            lines.append(f"- {item}")
+    else:
+        lines.append("- No follow-up details found in the article.")
+    sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
 
 
 def _is_rag_action_pending(pending: dict[str, Any] | None) -> bool:

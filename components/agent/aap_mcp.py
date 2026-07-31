@@ -214,7 +214,6 @@ class AapMcpClient:
     def _normalize_tool_result(result: Any) -> Any:
         if not isinstance(result, dict):
             return result
-        is_error = bool(result.get("isError") or result.get("is_error"))
         content = result.get("content")
         if not isinstance(content, list):
             return result
@@ -226,15 +225,6 @@ class AapMcpClient:
             return result
         merged = "\n".join(texts)
         try:
-            parsed: Any = json.loads(merged)
+            return json.loads(merged)
         except json.JSONDecodeError:
-            parsed = {"text": merged, "raw": result}
-        if not is_error:
-            return parsed
-        if isinstance(parsed, dict):
-            out = dict(parsed)
-            out["isError"] = True
-            if not out.get("error"):
-                out["error"] = merged or "Tool returned an error"
-            return out
-        return {"isError": True, "error": merged or "Tool returned an error", "data": parsed}
+            return {"text": merged, "raw": result}

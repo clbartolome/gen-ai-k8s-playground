@@ -17,19 +17,18 @@ You may receive prior conversation turns and a previous category. Use them.
 - OPENSHIFT — Kubernetes or OpenShift: clusters, pods, deployments, routes, projects, oc/kubectl, operators, nodes, namespaces, workloads.
 - AAP — Ansible / Ansible Automation Platform: playbooks, inventories, job templates, workflow templates, controller jobs, automation runs.
 - ITSM — ITSM operations that are not knowledge-base/RAG: incidents, tickets, comments, priority, assignment, close/resolve. Not documentation lookup.
-- RAG — IT-related knowledge-base / procedure requests: documented procedures, how-tos, concepts, troubleshooting advice, policies, or KB-style questions (including when the topic overlaps OpenShift, AAP, or ITSM).
+- RAG — IT-related, but not OpenShift, AAP, or ITSM ticket operations: general IT how-tos, concepts, troubleshooting advice, policies, or knowledge-base style questions.
 - OUT_CONTEXT — Not related to IT (e.g. cooking, sports, jokes, personal advice).
 
 # Decision rules
-1. If the user mentions "procedure" or "procedimiento" (or clearly asks for a documented procedure/process from the knowledge base), choose RAG — even if the topic also involves OpenShift, AAP, or ITSM.
-2. Otherwise pick the most specific match. Prefer OPENSHIFT or AAP over RAG when both could apply.
-3. Prefer ITSM over RAG when the user wants to create, update, comment on, assign, or close a ticket/incident (and is not asking for a procedure).
-4. Prefer RAG over ITSM when the user asks for documentation, explanations, or KB-style answers without ticket actions.
-5. Follow-ups: if the assistant asked for missing details and the user is answering that question (short or long), keep the previous category. Do NOT choose OUT_CONTEXT.
-6. If a previous category is provided and the latest message continues or answers that topic, keep that category unless the user clearly switches domains.
-7. If the request is unrelated to IT and is not a follow-up answer, choose OUT_CONTEXT.
-8. If unclear between IT categories, prefer RAG over OUT_CONTEXT only when the topic is clearly IT.
-9. Never invent facts. Do not call tools. Do not solve the request.
+1. Pick the most specific match. Prefer OPENSHIFT or AAP over RAG when both could apply.
+2. Prefer ITSM over RAG when the user wants to create, update, comment on, assign, or close a ticket/incident.
+3. Prefer RAG over ITSM when the user asks for documentation, explanations, or KB-style answers without ticket actions.
+4. Follow-ups: if the assistant asked for missing details and the user is answering that question (short or long), keep the previous category. Do NOT choose OUT_CONTEXT.
+5. If a previous category is provided and the latest message continues or answers that topic, keep that category unless the user clearly switches domains.
+6. If the request is unrelated to IT and is not a follow-up answer, choose OUT_CONTEXT.
+7. If unclear between IT categories, prefer RAG over OUT_CONTEXT only when the topic is clearly IT.
+8. Never invent facts. Do not call tools. Do not solve the request.
 
 # Output
 Reply with exactly one line and nothing else:
@@ -187,53 +186,6 @@ Return exactly one JSON object and nothing else (no Markdown fences, no commenta
 - Include a parameter only when the user clearly provided its value.
 - Use the exact name from the missing list.
 - If nothing was provided, return {"provided": []}.
-"""
-
-RAG_ACTION_ERROR_PROMPT = """You explain a failed procedure step to the user.
-
-# Mission
-Tell the user politely that the procedure was aborted because a step failed.
-Nothing after that step was executed. Do not invent partial success or claim the request completed.
-
-# Rules
-- Reply in the same language as the user.
-- Be clear and concise. Say that there was a problem, that the procedure stopped, and include the relevant failure detail.
-- Do not mention tools, MCP, APIs, or internal systems by technical name unless the failure text already does.
-- Suggest one practical next step when appropriate (for example retry or provide corrected data).
-- No JSON. No Markdown code fences.
-"""
-
-RAG_ACTION_SUMMARY_PROMPT = """You present the outcome of an executed procedure to the user.
-
-# Mission
-Write a clear summary of what was done, using only the execution state and follow-up requirements provided.
-Include the follow-up details the user needs next, filled with real values from the state when available.
-
-# Rules
-- Reply in the same language as the user.
-- Use only facts from the provided state, step log, and follow-up list.
-- Do not invent IDs, statuses, or results that are not in the data.
-- Do not mention tools, MCP, APIs, or internal retrieval details.
-- Prefer short Markdown sections when helpful (what was done, key values, follow-up).
-- Never reply with raw JSON.
-"""
-
-RAG_ACTION_MERGE_PROMPT = """You extract values from a tool result for later procedure steps.
-
-# Mission
-From the tool result only, pick identifiers and useful field values that later steps may need.
-Do not invent values. Prefer ids, numbers, names, statuses, ticket/incident/job identifiers.
-
-# Output
-Return exactly one JSON object and nothing else:
-
-{
-  "derived": {
-    "short_key": "value as string"
-  }
-}
-
-If nothing useful is present, return {"derived": {}}.
 """
 
 
@@ -490,48 +442,6 @@ def build_rag_action_ask_prompt() -> str:
 
 def build_rag_action_fill_prompt() -> str:
     return RAG_ACTION_FILL_PROMPT
-
-
-def build_rag_action_step_prompt(tools: list[dict[str, Any]]) -> str:
-    catalog = tools_json(tools, max_chars=12_000)
-    return f"""You execute one procedure step by choosing exactly one tool call.
-
-# Mission
-Given the current step, accumulated state, and available tools, decide which tool to call and with which arguments.
-Use only values from the step text and accumulated state. Do not invent identifiers.
-
-# Available tools
-{catalog}
-
-# Output
-Return exactly one JSON object and nothing else (no Markdown fences):
-
-{{
-  "action": "<exact_tool_name|skip>",
-  "arguments": {{}},
-  "thought": "Brief reason (max 30 words)"
-}}
-
-# Rules
-- `action` must be an exact tool name from the catalog, or `skip` if no tool is needed for this step.
-- Fill `arguments` exactly per that tool's inputSchema. Include all required args when calling a tool.
-- Prefer tools that match the step intent. Prefer values already in accumulated state over guessing.
-- Preserve user-provided and derived values exactly.
-- Never invent tool names or argument values.
-- If required data for a tool is missing from the state, still choose the best tool only when args can be filled; otherwise use `skip` and explain in thought.
-""".strip()
-
-
-def build_rag_action_error_prompt() -> str:
-    return RAG_ACTION_ERROR_PROMPT
-
-
-def build_rag_action_summary_prompt() -> str:
-    return RAG_ACTION_SUMMARY_PROMPT
-
-
-def build_rag_action_merge_prompt() -> str:
-    return RAG_ACTION_MERGE_PROMPT
 
 
 def build_present_result_prompt() -> str:
