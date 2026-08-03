@@ -48,7 +48,13 @@ class LLMClient:
         )
 
         try:
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             log.error("Unexpected LLM response keys=%s", list(data) if isinstance(data, dict) else type(data))
             raise RuntimeError(f"Unexpected LLM response: {data}") from exc
+        # Some models return null content (e.g. empty/refusal); treat as empty string.
+        if content is None:
+            return ""
+        if not isinstance(content, str):
+            return str(content)
+        return content

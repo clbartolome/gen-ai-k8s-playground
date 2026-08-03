@@ -189,6 +189,75 @@ Return exactly one JSON object and nothing else (no Markdown fences, no commenta
 - If nothing was provided, return {"provided": []}.
 """
 
+RAG_ACTION_STEP_DOMAIN_PROMPT = """You classify which operations domain a procedure step belongs to.
+
+Your only job: pick exactly one domain for the current step text.
+You may receive accumulated parameters and prior step outcomes for context.
+
+# Domains (choose exactly one)
+- OPENSHIFT — Kubernetes or OpenShift cluster operations (pods, deployments, routes, projects, namespaces, nodes, workloads, oc/kubectl-style actions).
+- AAP — Ansible Automation Platform (job templates, workflow templates, launching jobs, job status/output).
+- ITSM — ITSM ticket/incident operations (create, get, list, comment, priority, close/resolve). Not knowledge-base lookup.
+- NONE — The step is informational only, or no OpenShift/AAP/ITSM tool is needed.
+
+# Decision rules
+1. Prefer the most specific match for what the step itself asks to do.
+2. Prefer NONE when the step only instructs the operator, notifies the user, or does not require a live system call.
+3. Never invent facts. Do not call tools. Do not solve the step.
+
+# Output
+Reply with exactly one line and nothing else:
+
+Domain: <OPENSHIFT|AAP|ITSM|NONE>
+"""
+
+RAG_ACTION_ERROR_PROMPT = """You explain a failed procedure step to the user.
+
+# Mission
+Tell the user politely that the procedure was aborted because a step failed.
+Nothing after that step was executed. Do not invent partial success or claim the request completed.
+
+# Rules
+- Reply in the same language as the user.
+- Be clear and concise. Say that there was a problem, that the procedure stopped, and include the relevant failure detail.
+- Do not mention tools, MCP, APIs, or internal systems by technical name unless the failure text already does.
+- Suggest one practical next step when appropriate (for example retry or provide corrected data).
+- No JSON. No Markdown code fences.
+"""
+
+RAG_ACTION_SUMMARY_PROMPT = """You present the outcome of an executed procedure to the user.
+
+# Mission
+Write a clear summary of what was done, using only the execution state and follow-up requirements provided.
+Include the follow-up details the user needs next, filled with real values from the state when available.
+
+# Rules
+- Reply in the same language as the user.
+- Use only facts from the provided state, step log, and follow-up list.
+- Do not invent IDs, statuses, or results that are not in the data.
+- Do not mention tools, MCP, APIs, or internal retrieval details.
+- Prefer short Markdown sections when helpful (what was done, key values, follow-up).
+- Never reply with raw JSON.
+"""
+
+RAG_ACTION_MERGE_PROMPT = """You extract values from a tool result for later procedure steps.
+
+# Mission
+From the tool result only, pick identifiers and useful field values that later steps may need.
+Do not invent values. Prefer ids, numbers, names, statuses, ticket/incident/job identifiers.
+
+# Output
+Return exactly one JSON object and nothing else:
+
+{
+  "derived": {
+    "short_key": "value as string"
+  }
+}
+
+If nothing useful is present, return {"derived": {}}.
+"""
+
 
 def _clip(text: str, limit: int) -> str:
     text = " ".join(text.split())
@@ -388,6 +457,9 @@ def build_aap_prompt(tools: list[dict[str, Any]]) -> str:
             "Help with AAP jobs, templates, workflows, and related operations using only "
             "the tools below. Use workflow_* tools only when the user mentions workflows. "
             "Never invent template or job identifiers. Never answer live AAP state from memory."
+            "When launching a workflow job template, put the parameters in 'request_body.extra_vars'  key. Example: {'id': '123456', 'request_body': {'extra_vars': {'param1': 'value1', 'param2': 'value2'}}}."
+            "When launching a workflow job template if itsm_change_ref or itsm_service_request_ref is mentioned, put both in extra_vars."
+            "When launching a workflow job template if the value of an extra_var is a number, put it as an Integer in extra_vars."
         ),
         tools=tools,
         max_tool_chars=6_000,
@@ -401,6 +473,8 @@ def build_itsm_prompt(tools: list[dict[str, Any]]) -> str:
             "Help with incidents and ticket operations (list, get, create, comment, "
             "severity, close) using only the tools below. Do not use knowledge-base "
             "tools here. Never invent ticket IDs or invent ticket state from memory."
+            "When opening a service request with a template, put the template name as a string in 'request_template_id' and specific parameters in 'specifications_json'. Use also a name and description related with the request. Example: {'name': 'service-request-name', 'description': 'service-request-description', 'request_template_id': 'template-name', 'specifications_json': {'param1': 'value1', 'param2': 'value2'}}."
+
         ),
         tools=tools,
         max_tool_chars=6_000,
@@ -443,6 +517,22 @@ def build_rag_action_ask_prompt() -> str:
 
 def build_rag_action_fill_prompt() -> str:
     return RAG_ACTION_FILL_PROMPT
+
+
+def build_rag_action_step_domain_prompt() -> str:
+    return RAG_ACTION_STEP_DOMAIN_PROMPT
+
+
+def build_rag_action_error_prompt() -> str:
+    return RAG_ACTION_ERROR_PROMPT
+
+
+def build_rag_action_summary_prompt() -> str:
+    return RAG_ACTION_SUMMARY_PROMPT
+
+
+def build_rag_action_merge_prompt() -> str:
+    return RAG_ACTION_MERGE_PROMPT
 
 
 def build_present_result_prompt() -> str:
