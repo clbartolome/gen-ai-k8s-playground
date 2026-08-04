@@ -12,6 +12,9 @@
 *.env
 !.env.example
 
+# Local agent trace DB (wiped on make local-run / local-clean)
+.data/
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 

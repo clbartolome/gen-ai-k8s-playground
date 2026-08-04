@@ -11,3 +11,6 @@ images:
   - name: gen-ai-k8s-playground-chat
     newName: quay.io/calopezb/gen-ai-k8s-playground-chat
     newTag: latest
+  - name: gen-ai-k8s-playground-monitor
+    newName: quay.io/calopezb/gen-ai-k8s-playground-monitor
+    newTag: latest

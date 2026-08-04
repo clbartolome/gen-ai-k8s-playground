@@ -13,6 +13,8 @@ from logutil import setup_logging
 from openshift_mcp import OpenShiftMcpClient
 from react import ReactAgent
 from threads import ThreadStore
+from trace import TraceBuilder
+from trace_store import TraceStore
 
 setup_logging()
 log = logging.getLogger("agent.main")
@@ -25,6 +27,7 @@ agent = ReactAgent(
     itsm_mcp=ItsmMcpClient(settings),
 )
 thread_store = ThreadStore()
+trace_store = TraceStore(os.environ.get("TRACE_DB_PATH", "/tmp/agent-traces.db"))
 
 app = Flask(__name__)
 
@@ -49,14 +52,45 @@ def _append_thought(run_id: str, text: str) -> None:
 
 
 def _process_run(run_id: str, thread_id: str, user_message: str) -> None:
+    existing = trace_store.get_trace(thread_id)
+    _, thread = thread_store.get_or_create(thread_id)
+    pending = thread.get("pending")
+    continuing = isinstance(pending, dict) and (
+        pending.get("kind") == "rag_action" or bool(pending.get("question"))
+    )
+
+    trace = TraceBuilder.for_thread(
+        thread_id=thread_id,
+        run_id=run_id,
+        existing=existing,
+    )
+    # First ask of a thread (or a new ask after the previous turn finished).
+    # Clarifying replies are recorded as user_input inside ReactAgent.
+    if not continuing:
+        trace.add(
+            "user_message",
+            "User message",
+            detail={"message": user_message},
+        )
+
+    root_message = trace.root_message or user_message
+    trace_store.upsert(
+        thread_id=thread_id,
+        run_id=run_id,
+        status="running",
+        user_message=root_message,
+        preview=trace.preview(),
+        category=(existing or {}).get("category") if existing else None,
+        nodes=trace.nodes,
+    )
     try:
-        _, thread = thread_store.get_or_create(thread_id)
         turn = agent.run(
             user_message,
             dialogue=thread.get("dialogue") or [],
-            pending=thread.get("pending"),
+            pending=pending,
             last_category=thread.get("last_category"),
             on_thought=lambda text: _append_thought(run_id, text),
+            trace=trace,
         )
         thread_store.commit_turn(
             thread_id,
@@ -65,6 +99,17 @@ def _process_run(run_id: str, thread_id: str, user_message: str) -> None:
             action=turn.action,
             pending=turn.pending,
             last_category=turn.category,
+        )
+        status = "pending" if turn.action == "request_information" else "done"
+        trace_store.upsert(
+            thread_id=thread_id,
+            run_id=run_id,
+            status=status,
+            user_message=trace.root_message or user_message,
+            preview=trace.preview(turn.category),
+            category=turn.category,
+            response=turn.response,
+            nodes=trace.nodes,
         )
         _update_run(
             run_id,
@@ -76,6 +121,21 @@ def _process_run(run_id: str, thread_id: str, user_message: str) -> None:
         )
     except Exception as exc:
         log.exception("Run %s failed: %s", run_id, exc)
+        trace.add(
+            "error",
+            "Run failed",
+            status="error",
+            detail={"error": str(exc)},
+        )
+        trace_store.upsert(
+            thread_id=thread_id,
+            run_id=run_id,
+            status="error",
+            user_message=trace.root_message or user_message,
+            preview=trace.preview(),
+            response=str(exc),
+            nodes=trace.nodes,
+        )
         _update_run(run_id, status="error", error=str(exc), thread_id=thread_id)
 
 
@@ -136,6 +196,27 @@ def get_thread(thread_id: str):
     if thread is None:
         return jsonify({"error": "thread not found"}), 404
     return jsonify({"thread_id": thread_id, **thread})
+
+
+@app.get("/traces")
+def list_traces():
+    try:
+        limit = int(request.args.get("limit", 50))
+    except ValueError:
+        limit = 50
+    try:
+        offset = int(request.args.get("offset", 0))
+    except ValueError:
+        offset = 0
+    return jsonify({"traces": trace_store.list_traces(limit=limit, offset=offset)})
+
+
+@app.get("/traces/<thread_id>")
+def get_trace(thread_id: str):
+    trace = trace_store.get_trace(thread_id)
+    if trace is None:
+        return jsonify({"error": "trace not found"}), 404
+    return jsonify(trace)
 
 
 if __name__ == "__main__":

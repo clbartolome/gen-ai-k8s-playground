@@ -1,37 +1,35 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: agent
+  name: monitor
   labels:
-    app.kubernetes.io/name: agent
-    app.kubernetes.io/component: agent
+    app.kubernetes.io/name: monitor
+    app.kubernetes.io/component: monitor
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: agent
+      app.kubernetes.io/name: monitor
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: agent
-        app.kubernetes.io/component: agent
+        app.kubernetes.io/name: monitor
+        app.kubernetes.io/component: monitor
     spec:
       securityContext:
         hostUsers: false
       containers:
-        - name: agent
-          image: gen-ai-k8s-playground-agent:local
+        - name: monitor
+          image: gen-ai-k8s-playground-monitor:local
           imagePullPolicy: Always
           ports:
             - name: http
-              containerPort: 8080
+              containerPort: 5100
           env:
-            - name: OPENSHIFT_MCP_URL
-              value: https://openshift-mcp.apps.hetzner.calopezb.com/mcp/
-            - name: SSL_VERIFY
-              value: "false"
-            - name: TRACE_DB_PATH
-              value: /tmp/agent-traces.db
+            - name: AGENT_URL
+              value: http://agent:8080
+            - name: AGENT_TIMEOUT
+              value: "30"
           readinessProbe:
             httpGet:
               path: /health

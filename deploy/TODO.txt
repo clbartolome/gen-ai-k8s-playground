@@ -18,9 +18,11 @@ Done
 - [x] deploy/base — agent, chat, namespace
 - [x] deploy/overlays/openshift — Quay images
 - [x] Agent talks to external OpenShift MCP (OPENSHIFT_MCP_URL)
-- [x] Thoughts shown in chat (no separate monitor)
+- [x] Thoughts shown in chat (no separate monitor) — superseded by process monitor
+- [x] Process monitor reading agent SQLite traces
 
 Next
 ----
 - [ ] LLM config for OpenShift (Secret + env in deployment) when needed
 - [ ] Resource requests/limits tuned for your cluster
+- [x] Process monitor (React) reading agent SQLite traces

@@ -1,0 +1,55 @@
+:root {
+  --bg-0: #0b1220;
+  --bg-1: #111a2b;
+  --bg-2: #182338;
+  --bg-3: #22304a;
+  --line: rgba(148, 176, 214, 0.18);
+  --text: #e8eef8;
+  --muted: #8fa3c1;
+  --accent: #3dd6c6;
+  --accent-dim: rgba(61, 214, 198, 0.15);
+  --warn: #f0b429;
+  --danger: #ff6b7a;
+  --ok: #5bd67a;
+  --openshift: #ee0000;
+  --aap: #f0b429;
+  --itsm: #5b8def;
+  --rag: #3dd6c6;
+  --radius: 14px;
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+  font-family: 'DM Sans', system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg-0);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(61, 214, 198, 0.12), transparent 55%),
+    radial-gradient(900px 500px at 90% 0%, rgba(91, 141, 239, 0.14), transparent 50%),
+    linear-gradient(180deg, #0b1220 0%, #0e1626 100%);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+code,
+.mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}

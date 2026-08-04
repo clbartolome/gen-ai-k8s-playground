@@ -35,6 +35,7 @@ from prompts import (
     build_rag_action_summary_prompt,
     build_rag_not_found_prompt,
 )
+from trace import TraceBuilder
 
 log = logging.getLogger("agent.rag_action")
 
@@ -82,6 +83,7 @@ def run_rag_action(
     dialogue: list[dict[str, Any]] | None = None,
     pending: dict[str, Any] | None = None,
     on_thought: ThoughtCallback | None = None,
+    trace: TraceBuilder | None = None,
 ) -> RagActionResult:
     """Collect missing params, then execute the procedure with MCP tools."""
     log.info(
@@ -103,6 +105,7 @@ def run_rag_action(
             pending=pending or {},
             registry=registry,
             on_thought=on_thought,
+            trace=trace,
         )
     return _start_action(
         user_message,
@@ -111,6 +114,7 @@ def run_rag_action(
         dialogue=dialogue,
         registry=registry,
         on_thought=on_thought,
+        trace=trace,
     )
 
 
@@ -122,11 +126,18 @@ def _start_action(
     dialogue: list[dict[str, Any]] | None,
     registry: _ToolRegistry,
     on_thought: ThoughtCallback | None,
+    trace: TraceBuilder | None,
 ) -> RagActionResult:
     if on_thought:
         on_thought("Searching the knowledge base for the procedure…")
     article = _fetch_article(user_message, itsm_mcp=itsm_mcp)
     if article is None:
+        if trace:
+            trace.add(
+                "article",
+                "No procedure article found",
+                status="error",
+            )
         return RagActionResult(
             response=_not_found(user_message, llm=llm, dialogue=dialogue),
         )
@@ -134,8 +145,25 @@ def _start_action(
     article_text = _article_text(article)
     if not article_text.strip():
         log.info("RAG action article empty after formatting")
+        if trace:
+            trace.add(
+                "article",
+                "No procedure article found",
+                status="error",
+            )
         return RagActionResult(
             response=_not_found(user_message, llm=llm, dialogue=dialogue),
+        )
+
+    article_id = _article_id_from_payload(article)
+    if trace:
+        label = (
+            f"Article found · {article_id}" if article_id else "Article found"
+        )
+        trace.add(
+            "article",
+            label,
+            detail={"article_id": article_id} if article_id else {},
         )
 
     if len(article_text) > _MAX_ARTICLE_CHARS:
@@ -157,6 +185,18 @@ def _start_action(
     procedure = _normalize_procedure(extracted.get("procedure"))
     follow_up = _normalize_follow_up(extracted.get("follow_up"))
 
+    if trace:
+        trace.add(
+            "procedure",
+            f"Procedure analyzed · {len(procedure)} steps",
+            detail={
+                "steps": len(procedure),
+                "known_parameters": known,
+                "missing_parameters": missing,
+                "procedure": procedure,
+            },
+        )
+
     return _next_result(
         user_message,
         llm=llm,
@@ -167,6 +207,7 @@ def _start_action(
         follow_up=follow_up,
         registry=registry,
         on_thought=on_thought,
+        trace=trace,
     )
 
 
@@ -178,6 +219,7 @@ def _continue_collection(
     pending: dict[str, Any],
     registry: _ToolRegistry,
     on_thought: ThoughtCallback | None,
+    trace: TraceBuilder | None,
 ) -> RagActionResult:
     known = _normalize_known(pending.get("known_parameters"))
     missing = _normalize_missing(pending.get("missing_parameters"), known)
@@ -196,6 +238,17 @@ def _continue_collection(
         known = _merge_known(known, provided)
         missing = _normalize_missing(missing, known)
 
+    if trace and procedure:
+        trace.add(
+            "procedure",
+            f"Continuing procedure · {len(procedure)} steps",
+            detail={
+                "steps": len(procedure),
+                "known_parameters": known,
+                "missing_parameters": missing,
+            },
+        )
+
     return _next_result(
         user_message,
         llm=llm,
@@ -206,6 +259,7 @@ def _continue_collection(
         follow_up=follow_up,
         registry=registry,
         on_thought=on_thought,
+        trace=trace,
     )
 
 
@@ -220,6 +274,7 @@ def _next_result(
     follow_up: list[str],
     registry: _ToolRegistry,
     on_thought: ThoughtCallback | None,
+    trace: TraceBuilder | None,
 ) -> RagActionResult:
     state = {
         "category": "RAG",
@@ -237,13 +292,25 @@ def _next_result(
         )
         if on_thought:
             on_thought("Asking for the remaining required information…")
+        question = _ask_for_missing(
+            user_message,
+            missing=missing,
+            llm=llm,
+            dialogue=dialogue,
+        )
+        if trace:
+            trace.add(
+                "missing_info",
+                "Missing information",
+                status="pending",
+                detail={
+                    "question": question,
+                    "missing_parameters": missing,
+                    "known_parameters": known,
+                },
+            )
         return RagActionResult(
-            response=_ask_for_missing(
-                user_message,
-                missing=missing,
-                llm=llm,
-                dialogue=dialogue,
-            ),
+            response=question,
             pending=state,
             action="request_information",
         )
@@ -257,6 +324,7 @@ def _next_result(
         follow_up=follow_up,
         registry=registry,
         on_thought=on_thought,
+        trace=trace,
     )
 
 
@@ -270,6 +338,7 @@ def _execute_procedure(
     follow_up: list[str],
     registry: _ToolRegistry,
     on_thought: ThoughtCallback | None,
+    trace: TraceBuilder | None,
 ) -> RagActionResult:
     accumulated: dict[str, Any] = {
         "parameters": known,
@@ -327,9 +396,12 @@ def _execute_procedure(
         arguments = decision.get("arguments") or {}
         if not isinstance(arguments, dict):
             arguments = {}
+        domain = str(decision.get("domain") or "NONE").upper()
         thought = str(decision.get("thought") or "").strip()
         if thought and on_thought:
             on_thought(thought)
+
+        parallel_group = domain if domain in {"OPENSHIFT", "AAP", "ITSM"} else None
 
         if action in {"", "skip", "reply", "unsupported", "out_of_scope"}:
             accumulated["steps_log"].append(
@@ -339,9 +411,23 @@ def _execute_procedure(
                     "tool": None,
                     "ok": True,
                     "skipped": True,
+                    "domain": domain,
                     "result_summary": thought or "No tool needed for this step.",
                 }
             )
+            if trace:
+                trace.add(
+                    "step",
+                    f"Step {step_num} · skipped",
+                    status="skipped",
+                    detail={
+                        "step": step_num,
+                        "detail": detail,
+                        "domain": domain,
+                        "summary": thought or "No tool needed",
+                    },
+                    parallel_group=parallel_group,
+                )
             continue
 
         if action == "request_information":
@@ -359,6 +445,8 @@ def _execute_procedure(
                 detail=detail,
                 tool=None,
                 on_thought=on_thought,
+                trace=trace,
+                domain=domain,
             )
 
         if action not in registry.invokers:
@@ -377,6 +465,8 @@ def _execute_procedure(
                 detail=detail,
                 tool=action,
                 on_thought=on_thought,
+                trace=trace,
+                domain=domain,
             )
 
         if on_thought:
@@ -396,6 +486,8 @@ def _execute_procedure(
                 detail=detail,
                 tool=action,
                 on_thought=on_thought,
+                trace=trace,
+                domain=domain,
             )
 
         if _result_is_error(result):
@@ -416,6 +508,8 @@ def _execute_procedure(
                 detail=detail,
                 tool=action,
                 on_thought=on_thought,
+                trace=trace,
+                domain=domain,
             )
 
         derived = _merge_derived_from_result(
@@ -424,16 +518,33 @@ def _execute_procedure(
             existing=accumulated["derived"],
         )
         accumulated["derived"] = derived
+        result_summary = _format_result(result)[:500]
         accumulated["steps_log"].append(
             {
                 "step": step_num,
                 "detail": detail,
                 "tool": action,
                 "ok": True,
+                "domain": domain,
                 "arguments": arguments,
-                "result_summary": _format_result(result)[:500],
+                "result_summary": result_summary,
             }
         )
+        if trace:
+            lane = domain if domain in {"OPENSHIFT", "AAP", "ITSM"} else "TOOL"
+            trace.add(
+                "step",
+                f"Step {step_num} · {lane} · {action}",
+                detail={
+                    "step": step_num,
+                    "detail": detail,
+                    "domain": domain,
+                    "tool": action,
+                    "arguments": arguments,
+                    "result_summary": result_summary,
+                },
+                parallel_group=parallel_group,
+            )
         if on_thought:
             on_thought(f"Step {index}/{total} completed.")
 
@@ -543,6 +654,7 @@ def _decide_step(
             "action": "skip",
             "arguments": {},
             "thought": "Step does not require an operations tool.",
+            "domain": domain,
         }
 
     bundle = registry.domains.get(domain)
@@ -555,6 +667,7 @@ def _decide_step(
                 ),
             },
             "thought": f"Domain {domain} has no tools.",
+            "domain": domain,
         }
 
     payload = {
@@ -589,11 +702,15 @@ def _decide_step(
     ]
     raw = llm.chat(messages).strip()
     data = _parse_json_object(raw)
-    return data if data else {
-        "action": "skip",
-        "arguments": {},
-        "thought": "No decision from specialist.",
-    }
+    if not data:
+        return {
+            "action": "skip",
+            "arguments": {},
+            "thought": "No decision from specialist.",
+            "domain": domain,
+        }
+    data["domain"] = domain
+    return data
 
 
 def _classify_step_domain(
@@ -704,6 +821,8 @@ def _abort_procedure(
     detail: str,
     tool: str | None,
     on_thought: ThoughtCallback | None,
+    trace: TraceBuilder | None = None,
+    domain: str | None = None,
 ) -> RagActionResult:
     """Stop the whole procedure on the first failed step; never continue."""
     accumulated["steps_log"].append(
@@ -712,9 +831,28 @@ def _abort_procedure(
             "detail": detail,
             "tool": tool,
             "ok": False,
+            "domain": domain,
             "result_summary": failure[:500],
         }
     )
+    if trace:
+        lane = domain if domain in {"OPENSHIFT", "AAP", "ITSM"} else None
+        label = f"Step {step_num} failed"
+        if tool:
+            label = f"Step {step_num} · {tool} failed"
+        trace.add(
+            "step",
+            label,
+            status="error",
+            detail={
+                "step": step_num,
+                "detail": detail,
+                "domain": domain,
+                "tool": tool,
+                "error": failure[:500],
+            },
+            parallel_group=lane,
+        )
     if on_thought:
         on_thought("A step failed; stopping the procedure…")
     return RagActionResult(
@@ -1143,6 +1281,19 @@ def _extract_article_id(result: Any) -> str | None:
                 value = article.get(key)
                 if value is not None and str(value).strip():
                     return str(value).strip()
+    return None
+
+
+def _article_id_from_payload(detail: Any) -> str | None:
+    """Best-effort id from a get_kb_article payload."""
+    found = _extract_article_id(detail)
+    if found:
+        return found
+    if isinstance(detail, dict):
+        for key in ("id", "article_id", "kb_id", "uuid"):
+            value = detail.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
     return None
 
 

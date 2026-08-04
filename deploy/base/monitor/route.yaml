@@ -1,0 +1,15 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: monitor
+  labels:
+    app.kubernetes.io/name: monitor
+spec:
+  to:
+    kind: Service
+    name: monitor
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

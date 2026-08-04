@@ -25,6 +25,7 @@ from prompts import (
     build_router_prompt,
 )
 from rag_action import run_rag_action
+from trace import TraceBuilder
 
 log = logging.getLogger("agent.react")
 
@@ -81,6 +82,7 @@ class ReactAgent:
         pending: dict[str, Any] | None = None,
         last_category: str | None = None,
         on_thought: ThoughtCallback | None = None,
+        trace: TraceBuilder | None = None,
     ) -> TurnOutcome:
         prior = _fit_dialogue(dialogue or [], max_chars=_MAX_DIALOGUE_CHARS)
         if on_thought:
@@ -100,41 +102,69 @@ class ReactAgent:
         )
         if on_thought:
             on_thought(f"Classified as {category}")
+        if trace:
+            continuing = isinstance(pending, dict) and (
+                pending.get("kind") == "rag_action" or bool(pending.get("question"))
+            )
+            if continuing:
+                trace.add(
+                    "user_input",
+                    "User provided details",
+                    detail={"message": user_message},
+                )
+            trace.add(
+                "classified",
+                f"Classified as {category}",
+                detail={"category": category},
+            )
 
         if category == "OUT_CONTEXT":
-            return TurnOutcome(
-                response=self._out_context(user_message, dialogue=prior),
-                category=category,
+            response = self._out_context(user_message, dialogue=prior)
+            return _finalize_turn(
+                TurnOutcome(response=response, category=category),
+                trace=trace,
             )
         if category == "OPENSHIFT":
-            return self._run_specialist(
-                user_message,
-                category=category,
-                tools=self._openshift_mcp.get_tools(),
-                build_prompt=build_openshift_prompt,
-                invoke=self._openshift_mcp.invoke,
-                dialogue=prior,
-                on_thought=on_thought,
+            return _finalize_turn(
+                self._run_specialist(
+                    user_message,
+                    category=category,
+                    tools=self._openshift_mcp.get_tools(),
+                    build_prompt=build_openshift_prompt,
+                    invoke=self._openshift_mcp.invoke,
+                    dialogue=prior,
+                    on_thought=on_thought,
+                    trace=trace,
+                ),
+                trace=trace,
             )
         if category == "AAP":
-            return self._run_specialist(
-                user_message,
-                category=category,
-                tools=self._aap_mcp.list_tools(),
-                build_prompt=build_aap_prompt,
-                invoke=self._aap_mcp.call_tool,
-                dialogue=prior,
-                on_thought=on_thought,
+            return _finalize_turn(
+                self._run_specialist(
+                    user_message,
+                    category=category,
+                    tools=self._aap_mcp.list_tools(),
+                    build_prompt=build_aap_prompt,
+                    invoke=self._aap_mcp.call_tool,
+                    dialogue=prior,
+                    on_thought=on_thought,
+                    trace=trace,
+                ),
+                trace=trace,
             )
         if category == "ITSM":
-            return self._run_specialist(
-                user_message,
-                category=category,
-                tools=self._itsm_mcp.list_tools(),
-                build_prompt=build_itsm_prompt,
-                invoke=self._itsm_mcp.call_tool,
-                dialogue=prior,
-                on_thought=on_thought,
+            return _finalize_turn(
+                self._run_specialist(
+                    user_message,
+                    category=category,
+                    tools=self._itsm_mcp.list_tools(),
+                    build_prompt=build_itsm_prompt,
+                    invoke=self._itsm_mcp.call_tool,
+                    dialogue=prior,
+                    on_thought=on_thought,
+                    trace=trace,
+                ),
+                trace=trace,
             )
         if category == "RAG":
             if isinstance(pending, dict) and pending.get("kind") == "rag_action":
@@ -149,15 +179,25 @@ class ReactAgent:
                     dialogue=prior,
                     pending=pending,
                     on_thought=on_thought,
+                    trace=trace,
                 )
-                return TurnOutcome(
-                    response=result.response,
-                    category=category,
-                    action=result.action,
-                    pending=result.pending,
+                return _finalize_turn(
+                    TurnOutcome(
+                        response=result.response,
+                        category=category,
+                        action=result.action,
+                        pending=result.pending,
+                    ),
+                    trace=trace,
                 )
             intent = self._classify_rag_intent(user_message, dialogue=prior)
             log.info("RAG intent=%s", intent)
+            if trace:
+                trace.add(
+                    "rag_intent",
+                    f"RAG intent: {intent}",
+                    detail={"intent": intent},
+                )
             if intent == "ACTION":
                 if on_thought:
                     on_thought("Preparing the requested action…")
@@ -170,26 +210,41 @@ class ReactAgent:
                     dialogue=prior,
                     pending=pending,
                     on_thought=on_thought,
+                    trace=trace,
                 )
-                return TurnOutcome(
-                    response=result.response,
-                    category=category,
-                    action=result.action,
-                    pending=result.pending,
+                return _finalize_turn(
+                    TurnOutcome(
+                        response=result.response,
+                        category=category,
+                        action=result.action,
+                        pending=result.pending,
+                    ),
+                    trace=trace,
                 )
             if on_thought:
                 on_thought("Searching the knowledge base…")
-            return TurnOutcome(
-                response=self._run_rag(user_message, dialogue=prior),
-                category=category,
+            return _finalize_turn(
+                TurnOutcome(
+                    response=self._run_rag(
+                        user_message,
+                        dialogue=prior,
+                        on_thought=on_thought,
+                        trace=trace,
+                    ),
+                    category=category,
+                ),
+                trace=trace,
             )
 
-        return TurnOutcome(
-            response=(
-                "I could not classify that request. Please rephrase it in terms of "
-                "OpenShift, Ansible, ITSM, or IT knowledge."
+        return _finalize_turn(
+            TurnOutcome(
+                response=(
+                    "I could not classify that request. Please rephrase it in terms of "
+                    "OpenShift, Ansible, ITSM, or IT knowledge."
+                ),
+                category="OUT_CONTEXT",
             ),
-            category="OUT_CONTEXT",
+            trace=trace,
         )
 
     def _resolve_category(
@@ -304,6 +359,8 @@ class ReactAgent:
         user_message: str,
         *,
         dialogue: list[dict[str, str]] | None = None,
+        on_thought: ThoughtCallback | None = None,
+        trace: TraceBuilder | None = None,
     ) -> str:
         tools = [
             t
@@ -317,6 +374,13 @@ class ReactAgent:
         }
         if "rag_search_kb" not in by_name or "get_kb_article" not in by_name:
             log.warning("RAG tools missing names=%s", sorted(by_name))
+            if trace:
+                trace.add(
+                    "article",
+                    "No knowledge article found",
+                    status="error",
+                    detail={"reason": "RAG tools unavailable"},
+                )
             return self._rag_not_found(user_message, dialogue=dialogue)
 
         search_args = _query_arguments(by_name["rag_search_kb"], user_message)
@@ -325,12 +389,35 @@ class ReactAgent:
             search_result = self._itsm_mcp.call_tool("rag_search_kb", search_args)
         except Exception:
             log.exception("RAG search failed")
+            if trace:
+                trace.add(
+                    "article",
+                    "Knowledge search failed",
+                    status="error",
+                    detail={"tool": "rag_search_kb"},
+                )
             return self._rag_not_found(user_message, dialogue=dialogue)
 
         article_id = _extract_article_id(search_result)
         if not article_id:
             log.info("RAG search returned no article id")
+            if trace:
+                trace.add(
+                    "article",
+                    "No knowledge article found",
+                    status="error",
+                    detail={"tool": "rag_search_kb"},
+                )
             return self._rag_not_found(user_message, dialogue=dialogue)
+
+        if trace:
+            trace.add(
+                "article",
+                f"Article found · {article_id}",
+                detail={"article_id": article_id, "tool": "rag_search_kb"},
+            )
+        if on_thought:
+            on_thought(f"Found article {article_id}…")
 
         detail_args = _article_id_arguments(by_name["get_kb_article"], article_id)
         log.info("RAG get_kb_article arguments=%s", detail_args)
@@ -338,6 +425,18 @@ class ReactAgent:
             detail = self._itsm_mcp.call_tool("get_kb_article", detail_args)
         except Exception as exc:
             log.exception("RAG get_kb_article failed id=%s", article_id)
+            if trace:
+                trace.add(
+                    "tool_call",
+                    "get_kb_article",
+                    status="error",
+                    detail={
+                        "tool": "get_kb_article",
+                        "arguments": detail_args,
+                        "error": str(exc),
+                    },
+                    parallel_group="ITSM",
+                )
             return self._present(
                 user_message,
                 tool_name="get_kb_article",
@@ -348,6 +447,17 @@ class ReactAgent:
                 dialogue=dialogue,
             )
 
+        if trace:
+            trace.add(
+                "tool_call",
+                "get_kb_article",
+                detail={
+                    "tool": "get_kb_article",
+                    "arguments": detail_args,
+                    "article_id": article_id,
+                },
+                parallel_group="ITSM",
+            )
         return self._present(
             user_message,
             tool_name="get_kb_article",
@@ -381,6 +491,7 @@ class ReactAgent:
         invoke: InvokeFn,
         dialogue: list[dict[str, str]] | None = None,
         on_thought: ThoughtCallback | None = None,
+        trace: TraceBuilder | None = None,
     ) -> TurnOutcome:
         if not tools:
             return TurnOutcome(
@@ -414,6 +525,13 @@ class ReactAgent:
             message = arguments.get("message")
             if not isinstance(message, str) or not message.strip():
                 message = "Could you provide the missing details to continue?"
+            if trace:
+                trace.add(
+                    "missing_info",
+                    "Missing information",
+                    status="pending",
+                    detail={"question": message.strip(), "category": category},
+                )
             return TurnOutcome(
                 response=message.strip(),
                 category=category,
@@ -429,6 +547,13 @@ class ReactAgent:
             if isinstance(message, str) and message.strip():
                 text = message.strip()
                 if action == "reply" and _looks_like_clarifying_question(text):
+                    if trace:
+                        trace.add(
+                            "missing_info",
+                            "Missing information",
+                            status="pending",
+                            detail={"question": text, "category": category},
+                        )
                     return TurnOutcome(
                         response=text,
                         category=category,
@@ -449,6 +574,13 @@ class ReactAgent:
 
         if action not in allowed:
             log.warning("Unknown or disallowed tool action=%s", action)
+            if trace:
+                trace.add(
+                    "error",
+                    f"Unknown tool · {action}",
+                    status="error",
+                    detail={"tool": action, "arguments": arguments},
+                )
             return TurnOutcome(
                 response=(
                     "I could not map that request to an available operation. "
@@ -463,6 +595,19 @@ class ReactAgent:
             result = invoke(action, arguments)
         except Exception as exc:
             log.exception("Tool invoke failed action=%s", action)
+            if trace:
+                trace.add(
+                    "tool_call",
+                    f"{category} · {action}",
+                    status="error",
+                    detail={
+                        "tool": action,
+                        "arguments": arguments,
+                        "error": str(exc),
+                        "category": category,
+                    },
+                    parallel_group=category,
+                )
             return TurnOutcome(
                 response=self._present(
                     user_message,
@@ -475,6 +620,18 @@ class ReactAgent:
                 action=action,
             )
 
+        if trace:
+            trace.add(
+                "tool_call",
+                f"{category} · {action}",
+                detail={
+                    "tool": action,
+                    "arguments": arguments,
+                    "category": category,
+                    "result_summary": _clip_for_trace(result),
+                },
+                parallel_group=category,
+            )
         return TurnOutcome(
             response=self._present(
                 user_message,
@@ -548,6 +705,41 @@ class ReactAgent:
                 },
             ]
         ).strip()
+
+
+def _finalize_turn(
+    turn: TurnOutcome,
+    *,
+    trace: TraceBuilder | None,
+) -> TurnOutcome:
+    """Append a final node when the turn produced a user-facing response."""
+    if not trace:
+        return turn
+    # Avoid duplicating a final node if a caller already added one.
+    if any(node.get("type") == "final" for node in trace.nodes):
+        return turn
+    status = "pending" if turn.action == "request_information" else "ok"
+    label = "Waiting for user" if status == "pending" else "Final response"
+    trace.add(
+        "final",
+        label,
+        status=status,
+        detail={
+            "response": turn.response,
+            "action": turn.action,
+            "category": turn.category,
+            "pending": turn.pending,
+        },
+    )
+    return turn
+
+
+def _clip_for_trace(value: Any, limit: int = 400) -> str:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
 
 
 def _looks_like_clarifying_question(text: str) -> bool:
