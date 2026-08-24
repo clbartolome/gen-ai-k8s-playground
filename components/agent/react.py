@@ -25,7 +25,7 @@ from prompts import (
     build_router_prompt,
 )
 from rag_action import run_rag_action
-from trace import TraceBuilder
+from trace import TraceBuilder, clip_label
 
 log = logging.getLogger("agent.react")
 
@@ -528,7 +528,7 @@ class ReactAgent:
             if trace:
                 trace.add(
                     "missing_info",
-                    "Missing information",
+                    clip_label(message.strip()) or "Missing information",
                     status="pending",
                     detail={"question": message.strip(), "category": category},
                 )
@@ -550,7 +550,7 @@ class ReactAgent:
                     if trace:
                         trace.add(
                             "missing_info",
-                            "Missing information",
+                            clip_label(text) or "Missing information",
                             status="pending",
                             detail={"question": text, "category": category},
                         )
@@ -712,18 +712,17 @@ def _finalize_turn(
     *,
     trace: TraceBuilder | None,
 ) -> TurnOutcome:
-    """Append a final node when the turn produced a user-facing response."""
+    """Append a final node when the turn produced a completed user-facing response."""
     if not trace:
         return turn
-    # Avoid duplicating a final node if a caller already added one.
-    if any(node.get("type") == "final" for node in trace.nodes):
+    # Waiting for user input is represented by missing_info / user_input nodes.
+    if turn.action == "request_information":
         return turn
-    status = "pending" if turn.action == "request_information" else "ok"
-    label = "Waiting for user" if status == "pending" else "Final response"
+    label = clip_label(turn.response) or "Final response"
     trace.add(
         "final",
         label,
-        status=status,
+        status="ok",
         detail={
             "response": turn.response,
             "action": turn.action,

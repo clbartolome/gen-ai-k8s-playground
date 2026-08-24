@@ -1,12 +1,10 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { useEffect, useMemo, useState } from 'react'
+import { getNodeVisual } from '../utils/nodeVisual'
+import NodeIcon, { LaneLogo } from './NodeIcon'
 
 const STEP_MS = 520
 
-/**
- * Group consecutive step nodes that share parallel_group into lane rows.
- * Other nodes stay as single-item rows.
- */
 function buildRows(nodes) {
   const rows = []
   let i = 0
@@ -71,7 +69,6 @@ export default function TraceCanvas({
       }
     }, STEP_MS)
     return () => clearInterval(timer)
-    // Replay is driven by remounting this component via key= in App.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows])
 
@@ -89,7 +86,7 @@ export default function TraceCanvas({
               animate={{ opacity: 1, y: 0, scale: 1 }}
               transition={{ duration: 0.38, ease: [0.22, 1, 0.36, 1] }}
             >
-              {index > 0 && <div className="connector" aria-hidden />}
+              {index > 0 && <Connector prev={visibleRows[index - 1]?.nodes} next={row.nodes} />}
               {row.kind === 'single' ? (
                 <TraceNode
                   node={row.nodes[0]}
@@ -107,7 +104,10 @@ export default function TraceCanvas({
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: gIndex * 0.12, duration: 0.35 }}
                     >
-                      <p className="lane-label">{group.lane}</p>
+                      <p className="lane-label">
+                        <LaneLogo domain={group.lane} />
+                        {group.lane}
+                      </p>
                       {group.nodes.map((node, nIndex) => (
                         <motion.div
                           key={node.id}
@@ -136,13 +136,34 @@ export default function TraceCanvas({
   )
 }
 
+function Connector({ prev, next }) {
+  const from = prev?.[prev.length - 1]
+  const to = next?.[0]
+  const fromVisual = from ? getNodeVisual(from) : null
+  const toVisual = to ? getNodeVisual(to) : null
+  const color = toVisual?.color || fromVisual?.color || 'var(--accent)'
+  return (
+    <div
+      className="connector"
+      aria-hidden
+      style={{
+        background: `linear-gradient(180deg, ${fromVisual?.color || color}55, ${color})`,
+      }}
+    />
+  )
+}
+
 function TraceNode({ node, interactive, selected, onSelect, lane = false }) {
   const status = node.status || 'ok'
+  const visual = getNodeVisual(node)
+
   return (
     <button
       type="button"
       className={[
         'node',
+        `node-role-${visual.role}`,
+        visual.domain ? `node-domain-${visual.domain}` : '',
         lane ? 'lane-node' : '',
         interactive ? 'clickable' : '',
         selected ? 'selected' : '',
@@ -152,10 +173,18 @@ function TraceNode({ node, interactive, selected, onSelect, lane = false }) {
         .join(' ')}
       onClick={() => onSelect?.(node)}
       disabled={!interactive}
+      style={{
+        '--node-accent': visual.color,
+        '--node-glow': visual.glow,
+      }}
     >
       <span className="status-dot" aria-hidden />
-      <p className="type">{node.type?.replaceAll('_', ' ')}</p>
+      <div className="node-head">
+        <NodeIcon visual={visual} />
+        <p className="type">{visual.label}</p>
+      </div>
       <p className="label">{node.label}</p>
+      <p className="node-kind">{node.type?.replaceAll('_', ' ')}</p>
     </button>
   )
 }

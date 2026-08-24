@@ -35,7 +35,7 @@ from prompts import (
     build_rag_action_summary_prompt,
     build_rag_not_found_prompt,
 )
-from trace import TraceBuilder
+from trace import TraceBuilder, clip_label
 
 log = logging.getLogger("agent.rag_action")
 
@@ -301,7 +301,7 @@ def _next_result(
         if trace:
             trace.add(
                 "missing_info",
-                "Missing information",
+                clip_label(question) or "Missing information",
                 status="pending",
                 detail={
                     "question": question,

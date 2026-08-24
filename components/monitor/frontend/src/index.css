@@ -11,10 +11,11 @@
   --warn: #f0b429;
   --danger: #ff6b7a;
   --ok: #5bd67a;
-  --openshift: #ee0000;
-  --aap: #f0b429;
-  --itsm: #5b8def;
-  --rag: #3dd6c6;
+  --user: #9aa8bc;
+  --llm: #6b9fff;
+  --ocp: #ee0000;
+  --aap: #3dd6c6;
+  --itsm: #6ec4b8;
   --radius: 14px;
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
   font-family: 'DM Sans', system-ui, sans-serif;

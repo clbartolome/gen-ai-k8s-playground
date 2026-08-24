@@ -26,6 +26,16 @@ NODE_TYPES = frozenset(
 _NODE_ID_RE = re.compile(r"^n(\d+)$")
 
 
+def clip_label(text: str, limit: int = 72) -> str:
+    """Short label for monitor timeline nodes."""
+    clean = " ".join((text or "").split())
+    if not clean:
+        return ""
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(0, limit - 1)].rstrip() + "…"
+
+
 @dataclass
 class TraceBuilder:
     """Collects curated timeline nodes for one conversation thread."""
