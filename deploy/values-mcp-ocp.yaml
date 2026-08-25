@@ -1,0 +1,43 @@
+replicaCount: 1
+
+# Sólo accesible desde dentro del cluster
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: http
+
+# Nada expuesto fuera del cluster
+ingress:
+  enabled: false
+
+httpRoute:
+  enabled: false
+
+# Sin TLS en el MCP
+tls:
+  enabled: false
+
+# ServiceAccount para acceder a la API de OpenShift
+serviceAccount:
+  create: true
+  automountToken: true
+  name: openshift-mcp
+
+# Sólo permisos "view" a nivel de cluster
+rbac:
+  create: true
+  extraClusterRoleBindings:
+    - name: openshift-mcp-view
+      roleRef:
+        name: view
+        external: true
+
+# El MCP sólo publica herramientas read-only
+extraArgs:
+  - --read-only
+  - --cluster-provider=in-cluster
+  - --toolsets=core,config,openshift
+  - --stateless
+
+# Sin autenticación adicional / proxy delante del MCP
+# HTTP plano dentro del cluster

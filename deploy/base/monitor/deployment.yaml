@@ -25,11 +25,9 @@ spec:
           ports:
             - name: http
               containerPort: 5100
-          env:
-            - name: AGENT_URL
-              value: http://agent:8080
-            - name: AGENT_TIMEOUT
-              value: "30"
+          envFrom:
+            - secretRef:
+                name: gen-ai-playground-config
           readinessProbe:
             httpGet:
               path: /health

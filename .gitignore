@@ -11,6 +11,7 @@
 *.sln.docstates
 *.env
 !.env.example
+deploy/config.secret.env
 
 # Local agent trace DB (wiped on make local-run / local-clean)
 .data/
