@@ -35,10 +35,13 @@ body,
 #root {
   margin: 0;
   min-height: 100%;
+  min-height: 100dvh;
 }
 
 body {
   min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
   background:
     radial-gradient(1200px 600px at 10% -10%, rgba(61, 214, 198, 0.12), transparent 55%),
     radial-gradient(900px 500px at 90% 0%, rgba(91, 141, 239, 0.14), transparent 50%),

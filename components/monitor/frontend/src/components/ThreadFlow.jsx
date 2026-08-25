@@ -20,9 +20,14 @@ export default function ThreadFlow({
   return (
     <div className="flow-screen">
       <header className="flow-header">
-        <button type="button" className="back-btn" onClick={onBack}>
-          ← Threads
-        </button>
+        <div className="flow-header-toolbar">
+          <button type="button" className="back-btn" onClick={onBack}>
+            ← Threads
+          </button>
+          <button type="button" className="ghost" onClick={onReplay} disabled={!trace}>
+            Replay
+          </button>
+        </div>
         <div className="flow-header-main">
           {trace ? (
             <>
@@ -39,9 +44,6 @@ export default function ThreadFlow({
             <h1 className="flow-title">Loading…</h1>
           )}
         </div>
-        <button type="button" className="ghost" onClick={onReplay} disabled={!trace}>
-          Replay
-        </button>
       </header>
 
       {error ? <div className="banner error">{error}</div> : null}
