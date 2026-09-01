@@ -14,6 +14,7 @@ NODE_TYPES = frozenset(
         "rag_intent",
         "article",
         "procedure",
+        "procedure_confirm",
         "missing_info",
         "user_input",
         "tool_call",

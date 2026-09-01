@@ -89,11 +89,11 @@ function resolveRole(node) {
   if (type === 'user_message' || type === 'user_input') return 'user'
   if (type === 'tool_call' || type === 'step') return 'mcp'
   if (type === 'error') return 'system'
-  if (
+    if (
     type === 'classified' ||
-    type === 'rag_intent' ||
     type === 'missing_info' ||
     type === 'procedure' ||
+    type === 'procedure_confirm' ||
     type === 'final'
   ) {
     return 'llm'

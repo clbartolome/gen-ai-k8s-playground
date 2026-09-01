@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from aap_mcp import AapMcpClient
-from config import RAG_MCP_TOOLS
 from itsm_mcp import ItsmMcpClient
 from llm import LLMClient
 from openshift_mcp import OpenShiftMcpClient
@@ -19,9 +18,6 @@ from prompts import (
     build_openshift_prompt,
     build_out_context_prompt,
     build_present_result_prompt,
-    build_rag_intent_prompt,
-    build_rag_not_found_prompt,
-    build_rag_present_prompt,
     build_router_prompt,
 )
 from rag_action import run_rag_action
@@ -31,10 +27,6 @@ log = logging.getLogger("agent.react")
 
 _CATEGORY_RE = re.compile(
     r"Category:\s*(OPENSHIFT|AAP|ITSM|RAG|OUT_CONTEXT)",
-    re.IGNORECASE,
-)
-_RAG_INTENT_RE = re.compile(
-    r"Intent:\s*(INFORMATION|ACTION)",
     re.IGNORECASE,
 )
 _VALID_CATEGORIES = frozenset(
@@ -68,10 +60,7 @@ class ReactAgent:
         self._aap_mcp = aap_mcp
         self._itsm_mcp = itsm_mcp
         self._router_prompt = build_router_prompt()
-        self._rag_intent_prompt = build_rag_intent_prompt()
         self._present_prompt = build_present_result_prompt()
-        self._rag_present_prompt = build_rag_present_prompt()
-        self._rag_not_found_prompt = build_rag_not_found_prompt()
         self._out_context_prompt = build_out_context_prompt()
 
     def run(
@@ -167,71 +156,29 @@ class ReactAgent:
                 trace=trace,
             )
         if category == "RAG":
-            if isinstance(pending, dict) and pending.get("kind") == "rag_action":
-                if on_thought:
-                    on_thought("Continuing the requested action…")
-                result = run_rag_action(
-                    user_message,
-                    llm=self._llm,
-                    itsm_mcp=self._itsm_mcp,
-                    openshift_mcp=self._openshift_mcp,
-                    aap_mcp=self._aap_mcp,
-                    dialogue=prior,
-                    pending=pending,
-                    on_thought=on_thought,
-                    trace=trace,
-                )
-                return _finalize_turn(
-                    TurnOutcome(
-                        response=result.response,
-                        category=category,
-                        action=result.action,
-                        pending=result.pending,
-                    ),
-                    trace=trace,
-                )
-            intent = self._classify_rag_intent(user_message, dialogue=prior)
-            log.info("RAG intent=%s", intent)
-            if trace:
-                trace.add(
-                    "rag_intent",
-                    f"RAG intent: {intent}",
-                    detail={"intent": intent},
-                )
-            if intent == "ACTION":
-                if on_thought:
-                    on_thought("Preparing the requested action…")
-                result = run_rag_action(
-                    user_message,
-                    llm=self._llm,
-                    itsm_mcp=self._itsm_mcp,
-                    openshift_mcp=self._openshift_mcp,
-                    aap_mcp=self._aap_mcp,
-                    dialogue=prior,
-                    pending=pending,
-                    on_thought=on_thought,
-                    trace=trace,
-                )
-                return _finalize_turn(
-                    TurnOutcome(
-                        response=result.response,
-                        category=category,
-                        action=result.action,
-                        pending=result.pending,
-                    ),
-                    trace=trace,
-                )
-            if on_thought:
-                on_thought("Searching the knowledge base…")
+            if on_thought and not (
+                isinstance(pending, dict) and pending.get("kind") == "rag_action"
+            ):
+                on_thought("Searching the knowledge base for the procedure…")
+            elif on_thought:
+                on_thought("Continuing the procedure…")
+            result = run_rag_action(
+                user_message,
+                llm=self._llm,
+                itsm_mcp=self._itsm_mcp,
+                openshift_mcp=self._openshift_mcp,
+                aap_mcp=self._aap_mcp,
+                dialogue=prior,
+                pending=pending,
+                on_thought=on_thought,
+                trace=trace,
+            )
             return _finalize_turn(
                 TurnOutcome(
-                    response=self._run_rag(
-                        user_message,
-                        dialogue=prior,
-                        on_thought=on_thought,
-                        trace=trace,
-                    ),
+                    response=result.response,
                     category=category,
+                    action=result.action,
+                    pending=result.pending,
                 ),
                 trace=trace,
             )
@@ -315,32 +262,6 @@ class ReactAgent:
         log.warning("Router parse failed raw=%s", (raw or "")[:200])
         return "OUT_CONTEXT"
 
-    def _classify_rag_intent(
-        self,
-        user_message: str,
-        *,
-        dialogue: list[dict[str, str]] | None = None,
-    ) -> str:
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": self._rag_intent_prompt},
-        ]
-        messages.extend(dialogue or [])
-        messages.append({"role": "user", "content": user_message})
-        raw = self._llm.chat(messages)
-        log.info("RAG intent raw=%s", (raw or "").strip()[:300])
-        match = _RAG_INTENT_RE.search(raw or "")
-        if match:
-            return match.group(1).upper()
-        upper = (raw or "").upper()
-        for name in ("INFORMATION", "ACTION"):
-            if re.search(rf"\b{name}\b", upper):
-                return name
-        log.warning(
-            "RAG intent parse failed; defaulting to INFORMATION raw=%s",
-            (raw or "")[:200],
-        )
-        return "INFORMATION"
-
     def _out_context(
         self,
         user_message: str,
@@ -349,133 +270,6 @@ class ReactAgent:
     ) -> str:
         messages: list[dict[str, str]] = [
             {"role": "system", "content": self._out_context_prompt},
-        ]
-        messages.extend(dialogue or [])
-        messages.append({"role": "user", "content": user_message})
-        return self._llm.chat(messages).strip()
-
-    def _run_rag(
-        self,
-        user_message: str,
-        *,
-        dialogue: list[dict[str, str]] | None = None,
-        on_thought: ThoughtCallback | None = None,
-        trace: TraceBuilder | None = None,
-    ) -> str:
-        tools = [
-            t
-            for t in self._itsm_mcp.list_tools()
-            if isinstance(t, dict) and t.get("name") in RAG_MCP_TOOLS
-        ]
-        by_name = {
-            t["name"]: t
-            for t in tools
-            if isinstance(t.get("name"), str)
-        }
-        if "rag_search_kb" not in by_name or "get_kb_article" not in by_name:
-            log.warning("RAG tools missing names=%s", sorted(by_name))
-            if trace:
-                trace.add(
-                    "article",
-                    "No knowledge article found",
-                    status="error",
-                    detail={"reason": "RAG tools unavailable"},
-                )
-            return self._rag_not_found(user_message, dialogue=dialogue)
-
-        search_args = _query_arguments(by_name["rag_search_kb"], user_message)
-        log.info("RAG search arguments=%s", search_args)
-        try:
-            search_result = self._itsm_mcp.call_tool("rag_search_kb", search_args)
-        except Exception:
-            log.exception("RAG search failed")
-            if trace:
-                trace.add(
-                    "article",
-                    "Knowledge search failed",
-                    status="error",
-                    detail={"tool": "rag_search_kb"},
-                )
-            return self._rag_not_found(user_message, dialogue=dialogue)
-
-        article_id = _extract_article_id(search_result)
-        if not article_id:
-            log.info("RAG search returned no article id")
-            if trace:
-                trace.add(
-                    "article",
-                    "No knowledge article found",
-                    status="error",
-                    detail={"tool": "rag_search_kb"},
-                )
-            return self._rag_not_found(user_message, dialogue=dialogue)
-
-        if trace:
-            trace.add(
-                "article",
-                f"Article found · {article_id}",
-                detail={"article_id": article_id, "tool": "rag_search_kb"},
-            )
-        if on_thought:
-            on_thought(f"Found article {article_id}…")
-
-        detail_args = _article_id_arguments(by_name["get_kb_article"], article_id)
-        log.info("RAG get_kb_article arguments=%s", detail_args)
-        try:
-            detail = self._itsm_mcp.call_tool("get_kb_article", detail_args)
-        except Exception as exc:
-            log.exception("RAG get_kb_article failed id=%s", article_id)
-            if trace:
-                trace.add(
-                    "tool_call",
-                    "get_kb_article",
-                    status="error",
-                    detail={
-                        "tool": "get_kb_article",
-                        "arguments": detail_args,
-                        "error": str(exc),
-                    },
-                    parallel_group="ITSM",
-                )
-            return self._present(
-                user_message,
-                tool_name="get_kb_article",
-                arguments=detail_args,
-                result={"error": str(exc)},
-                present_prompt=self._rag_present_prompt,
-                compact=False,
-                dialogue=dialogue,
-            )
-
-        if trace:
-            trace.add(
-                "tool_call",
-                "get_kb_article",
-                detail={
-                    "tool": "get_kb_article",
-                    "arguments": detail_args,
-                    "article_id": article_id,
-                },
-                parallel_group="ITSM",
-            )
-        return self._present(
-            user_message,
-            tool_name="get_kb_article",
-            arguments=detail_args,
-            result=detail,
-            present_prompt=self._rag_present_prompt,
-            compact=False,
-            dialogue=dialogue,
-        )
-
-    def _rag_not_found(
-        self,
-        user_message: str,
-        *,
-        dialogue: list[dict[str, str]] | None = None,
-    ) -> str:
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": self._rag_not_found_prompt},
         ]
         messages.extend(dialogue or [])
         messages.append({"role": "user", "content": user_message})
@@ -717,6 +511,8 @@ def _finalize_turn(
         return turn
     # Waiting for user input is represented by missing_info / user_input nodes.
     if turn.action == "request_information":
+        return turn
+    if isinstance(turn.pending, dict) and turn.pending.get("kind") == "rag_action":
         return turn
     label = clip_label(turn.response) or "Final response"
     trace.add(
@@ -961,90 +757,3 @@ def _observation_for_presentation(result: Any, *, compact: bool = True) -> str:
             + "\n[Tool result truncated to fit model context]"
         )
     return observation
-
-
-def _unwrap_payload(result: Any) -> Any:
-    if isinstance(result, str):
-        try:
-            return json.loads(result)
-        except json.JSONDecodeError:
-            return result
-    if not isinstance(result, dict):
-        return result
-    if "text" in result and isinstance(result["text"], str):
-        try:
-            return json.loads(result["text"])
-        except json.JSONDecodeError:
-            pass
-    content = result.get("content")
-    if isinstance(content, list):
-        texts = [
-            str(item.get("text", ""))
-            for item in content
-            if isinstance(item, dict) and item.get("type") == "text"
-        ]
-        if texts:
-            merged = "\n".join(texts)
-            try:
-                return json.loads(merged)
-            except json.JSONDecodeError:
-                return {"text": merged}
-    return result
-
-
-def _search_hits(result: Any) -> list[dict[str, Any]]:
-    payload = _unwrap_payload(result)
-    if isinstance(payload, list):
-        return [item for item in payload if isinstance(item, dict)]
-    if not isinstance(payload, dict):
-        return []
-    for key in ("results", "hits", "articles", "items", "data"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return [item for item in value if isinstance(item, dict)]
-    if any(key in payload for key in ("id", "article_id", "kb_id", "uuid")):
-        return [payload]
-    return []
-
-
-def _extract_article_id(result: Any) -> str | None:
-    for hit in _search_hits(result):
-        for key in ("id", "article_id", "kb_id", "uuid"):
-            value = hit.get(key)
-            if value is not None and str(value).strip():
-                return str(value).strip()
-        article = hit.get("article")
-        if isinstance(article, dict):
-            for key in ("id", "article_id", "kb_id", "uuid"):
-                value = article.get(key)
-                if value is not None and str(value).strip():
-                    return str(value).strip()
-    return None
-
-
-def _tool_properties(tool: dict[str, Any]) -> dict[str, Any]:
-    schema = (
-        tool.get("inputSchema")
-        or tool.get("parameters")
-        or {}
-    )
-    if not isinstance(schema, dict):
-        return {}
-    props = schema.get("properties")
-    return props if isinstance(props, dict) else {}
-
-
-def _query_arguments(tool: dict[str, Any], user_message: str) -> dict[str, Any]:
-    props = _tool_properties(tool)
-    for key in ("query", "question", "q", "text", "search", "prompt"):
-        if key in props:
-            return {key: user_message}
-    return {"query": user_message}
-
-
-def _article_id_arguments(tool: dict[str, Any], article_id: str) -> dict[str, Any]:
-    props = _tool_properties(tool)
-    for key in ("article_id", "id", "kb_id", "uuid"):
-        if key in props:
-            return {key: article_id}
-    return {"id": article_id}

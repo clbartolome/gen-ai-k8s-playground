@@ -100,7 +100,15 @@ def _process_run(run_id: str, thread_id: str, user_message: str) -> None:
             pending=turn.pending,
             last_category=turn.category,
         )
-        status = "pending" if turn.action == "request_information" else "done"
+        status = (
+            "pending"
+            if turn.action == "request_information"
+            or (
+                isinstance(turn.pending, dict)
+                and turn.pending.get("kind") == "rag_action"
+            )
+            else "done"
+        )
         trace_store.upsert(
             thread_id=thread_id,
             run_id=run_id,

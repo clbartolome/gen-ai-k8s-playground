@@ -37,25 +37,42 @@ Reply with exactly one line and nothing else:
 Category: <OPENSHIFT|AAP|ITSM|RAG|OUT_CONTEXT>
 """
 
-RAG_INTENT_PROMPT = """You classify the user's intent for a knowledge-base / IT how-to request.
+RAG_PROCEDURE_DESCRIBE_PROMPT = """You present a documented procedure from the knowledge base.
 
-Your only job: decide whether the user wants information or wants to create/execute something.
+# Mission
+Summarize what the article describes: purpose, main steps at a high level, and what information would be needed if the user later asks you to run it.
+End by asking whether they want you to execute this procedure on their behalf.
+
+# Rules
+- Reply in the same language as the user.
+- Use only the article content provided. Do not invent steps or parameters.
+- Give a clear overview; you do not need to list every operational detail yet.
+- Mention required information only briefly (what would be needed to execute).
+- Do not mention tools, MCP, APIs, or internal retrieval details.
+- Finish with a direct question asking if they want you to execute the procedure.
+- No JSON. No Markdown code fences unless the article contains commands that must be preserved.
+"""
+
+RAG_PROCEDURE_CONFIRM_PROMPT = """You interpret whether the user wants to execute a procedure you just described.
+
+Your only job: decide if the user accepted or declined running the procedure on their behalf.
 You may receive prior conversation turns. Use them.
 
-# Intents (choose exactly one)
-- INFORMATION — The user wants to learn, understand, look up, or get guidance (how-to, explanation, policy, troubleshooting advice).
-- ACTION — The user wants to create, run, execute, perform, or carry out a concrete operation or procedure (not just read about it).
+# Outcomes (choose exactly one)
+- ACCEPT — The user clearly agrees to execute/run/apply the procedure (yes, ok, adelante, sí, ejecuta, etc.).
+- DECLINE — The user clearly refuses or only wanted information (no, cancel, solo información, etc.).
+- UNCLEAR — The answer does not clearly accept or decline execution.
 
 # Decision rules
-1. Prefer INFORMATION when the user asks what/how/why, or requests documentation, steps to follow themselves, or explanations.
-2. Prefer ACTION when the user asks you to do, create, launch, run, apply, or execute something on their behalf.
-3. If unclear, prefer INFORMATION.
-4. Never invent facts. Do not call tools. Do not solve the request.
+1. Short affirmative replies after an execution offer are usually ACCEPT.
+2. If the user provides parameter values without explicitly declining, treat as ACCEPT.
+3. If the user asks unrelated questions or changes topic without answering, choose UNCLEAR.
+4. Never invent facts. Do not call tools.
 
 # Output
 Reply with exactly one line and nothing else:
 
-Intent: <INFORMATION|ACTION>
+Decision: <ACCEPT|DECLINE|UNCLEAR>
 """
 
 PRESENT_RESULT_PROMPT = """You present tool results directly to the user.
@@ -433,8 +450,12 @@ def build_router_prompt() -> str:
     return ROUTER_PROMPT
 
 
-def build_rag_intent_prompt() -> str:
-    return RAG_INTENT_PROMPT
+def build_rag_procedure_describe_prompt() -> str:
+    return RAG_PROCEDURE_DESCRIBE_PROMPT
+
+
+def build_rag_procedure_confirm_prompt() -> str:
+    return RAG_PROCEDURE_CONFIRM_PROMPT
 
 
 def build_openshift_prompt(tools: list[dict[str, Any]]) -> str:

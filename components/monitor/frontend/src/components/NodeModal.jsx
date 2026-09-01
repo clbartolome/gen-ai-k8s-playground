@@ -7,6 +7,8 @@ const PRIORITY_KEYS = [
   'question',
   'category',
   'intent',
+  'decision',
+  'phase',
   'article_id',
   'tool',
   'domain',

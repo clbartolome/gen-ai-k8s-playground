@@ -1,12 +1,13 @@
-"""Process RAG requests classified as ACTION (create / execute).
+"""Process RAG procedure requests (search → describe → confirm → collect → execute).
 
 Flow:
-1. Fetch the KB article and extract parameters, procedure, and follow-up.
-2. If required parameters are missing, ask only for those and keep state in pending.
-3. When the user provides them, merge into known parameters.
-4. Once complete, execute each procedure step via domain specialist prompts + MCP tools.
-5. On tool error, stop and explain politely; on success, merge results into state.
-6. After all steps, compose a summary using accumulated state and follow-up.
+1. Search the knowledge base and fetch the procedure article.
+2. Describe the article at a high level and ask whether to execute it.
+3. If the user declines, reply politely and stop.
+4. If the user accepts, parse required information and procedure steps from the article.
+5. Ask for any missing parameters and keep state in pending.
+6. When complete, execute each procedure step via domain specialist prompts + MCP tools.
+7. After all steps, compose a summary using accumulated state and follow-up.
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ from prompts import (
     build_rag_action_step_domain_prompt,
     build_rag_action_summary_prompt,
     build_rag_not_found_prompt,
+    build_rag_procedure_confirm_prompt,
+    build_rag_procedure_describe_prompt,
 )
 from trace import TraceBuilder, clip_label
 
@@ -50,7 +53,20 @@ _DOMAIN_RE = re.compile(
     r"Domain:\s*(OPENSHIFT|AAP|ITSM|NONE)",
     re.IGNORECASE,
 )
+_CONFIRM_RE = re.compile(
+    r"Decision:\s*(ACCEPT|DECLINE|UNCLEAR)",
+    re.IGNORECASE,
+)
 _VALID_DOMAINS = frozenset({"OPENSHIFT", "AAP", "ITSM", "NONE"})
+_PHASE_AWAITING_CONFIRMATION = "awaiting_execution_confirmation"
+_PHASE_COLLECTING_PARAMETERS = "collecting_parameters"
+
+
+@dataclass(frozen=True)
+class _FetchedArticle:
+    payload: Any
+    article_id: str | None
+    text: str
 
 
 @dataclass(frozen=True)
@@ -85,7 +101,7 @@ def run_rag_action(
     on_thought: ThoughtCallback | None = None,
     trace: TraceBuilder | None = None,
 ) -> RagActionResult:
-    """Collect missing params, then execute the procedure with MCP tools."""
+    """Search, describe, confirm, collect params, then execute the procedure."""
     log.info(
         "RAG action started message_chars=%s dialogue_turns=%s continuing=%s",
         len(user_message or ""),
@@ -130,8 +146,12 @@ def _start_action(
 ) -> RagActionResult:
     if on_thought:
         on_thought("Searching the knowledge base for the procedure…")
-    article = _fetch_article(user_message, itsm_mcp=itsm_mcp)
-    if article is None:
+    fetched = _fetch_article(
+        user_message,
+        itsm_mcp=itsm_mcp,
+        trace=trace,
+    )
+    if fetched is None:
         if trace:
             trace.add(
                 "article",
@@ -142,7 +162,8 @@ def _start_action(
             response=_not_found(user_message, llm=llm, dialogue=dialogue),
         )
 
-    article_text = _article_text(article)
+    article_text = fetched.text
+    article_id = fetched.article_id
     if not article_text.strip():
         log.info("RAG action article empty after formatting")
         if trace:
@@ -155,59 +176,39 @@ def _start_action(
             response=_not_found(user_message, llm=llm, dialogue=dialogue),
         )
 
-    article_id = _article_id_from_payload(article)
-    if trace:
-        label = (
-            f"Article found · {article_id}" if article_id else "Article found"
-        )
-        trace.add(
-            "article",
-            label,
-            detail={"article_id": article_id} if article_id else {},
-        )
-
-    if len(article_text) > _MAX_ARTICLE_CHARS:
-        article_text = (
-            article_text[:_MAX_ARTICLE_CHARS]
-            + "\n[Article truncated to fit model context]"
-        )
-
     if on_thought:
-        on_thought("Extracting procedure details…")
-    extracted = _extract_from_article(
+        on_thought("Preparing the article summary…")
+    description = _describe_article(
         user_message,
         article_text=article_text,
         llm=llm,
         dialogue=dialogue,
     )
-    known = _normalize_known(extracted.get("known_parameters"))
-    missing = _normalize_missing(extracted.get("missing_parameters"), known)
-    procedure = _normalize_procedure(extracted.get("procedure"))
-    follow_up = _normalize_follow_up(extracted.get("follow_up"))
-
+    state = _pending_state(
+        phase=_PHASE_AWAITING_CONFIRMATION,
+        article_id=article_id,
+        article_text=article_text,
+        original_request=user_message,
+    )
     if trace:
         trace.add(
             "procedure",
-            f"Procedure analyzed · {len(procedure)} steps",
+            "Article described",
             detail={
-                "steps": len(procedure),
-                "known_parameters": known,
-                "missing_parameters": missing,
-                "procedure": procedure,
+                "phase": _PHASE_AWAITING_CONFIRMATION,
+                "article_id": article_id,
             },
         )
-
-    return _next_result(
-        user_message,
-        llm=llm,
-        dialogue=dialogue,
-        known=known,
-        missing=missing,
-        procedure=procedure,
-        follow_up=follow_up,
-        registry=registry,
-        on_thought=on_thought,
-        trace=trace,
+        trace.add(
+            "procedure_confirm",
+            "Awaiting execution confirmation",
+            status="pending",
+            detail={"phase": _PHASE_AWAITING_CONFIRMATION},
+        )
+    return RagActionResult(
+        response=description,
+        pending=state,
+        action="reply",
     )
 
 
@@ -221,6 +222,19 @@ def _continue_collection(
     on_thought: ThoughtCallback | None,
     trace: TraceBuilder | None,
 ) -> RagActionResult:
+    phase = str(pending.get("phase") or _PHASE_COLLECTING_PARAMETERS).strip()
+
+    if phase == _PHASE_AWAITING_CONFIRMATION:
+        return _handle_execution_confirmation(
+            user_message,
+            llm=llm,
+            dialogue=dialogue,
+            pending=pending,
+            registry=registry,
+            on_thought=on_thought,
+            trace=trace,
+        )
+
     known = _normalize_known(pending.get("known_parameters"))
     missing = _normalize_missing(pending.get("missing_parameters"), known)
     procedure = _normalize_procedure(pending.get("procedure"))
@@ -241,8 +255,9 @@ def _continue_collection(
     if trace and procedure:
         trace.add(
             "procedure",
-            f"Continuing procedure · {len(procedure)} steps",
+            f"Collecting parameters · {len(procedure)} steps",
             detail={
+                "phase": _PHASE_COLLECTING_PARAMETERS,
                 "steps": len(procedure),
                 "known_parameters": known,
                 "missing_parameters": missing,
@@ -263,6 +278,135 @@ def _continue_collection(
     )
 
 
+def _handle_execution_confirmation(
+    user_message: str,
+    *,
+    llm: LLMClient,
+    dialogue: list[dict[str, Any]] | None,
+    pending: dict[str, Any],
+    registry: _ToolRegistry,
+    on_thought: ThoughtCallback | None,
+    trace: TraceBuilder | None,
+) -> RagActionResult:
+    if on_thought:
+        on_thought("Checking whether you want to execute the procedure…")
+    decision = _classify_execution_confirmation(
+        user_message,
+        llm=llm,
+        dialogue=dialogue,
+    )
+    log.info("RAG procedure execution confirmation=%s", decision)
+    if trace:
+        trace.add(
+            "procedure_confirm",
+            f"Execution confirmation · {decision}",
+            status="ok" if decision == "ACCEPT" else "pending",
+            detail={"decision": decision, "phase": _PHASE_AWAITING_CONFIRMATION},
+        )
+
+    if decision == "DECLINE":
+        if trace:
+            trace.add(
+                "procedure",
+                "Execution declined",
+                detail={"decision": "DECLINE"},
+            )
+        return RagActionResult(
+            response=_decline_execution(user_message, llm=llm, dialogue=dialogue),
+            pending=None,
+            action="reply",
+        )
+
+    if decision == "UNCLEAR":
+        return RagActionResult(
+            response=_unclear_execution_reply(
+                user_message,
+                llm=llm,
+                dialogue=dialogue,
+            ),
+            pending=_pending_state(
+                phase=_PHASE_AWAITING_CONFIRMATION,
+                article_id=str(pending.get("article_id") or "") or None,
+                article_text=str(pending.get("article_text") or ""),
+                original_request=str(pending.get("original_request") or ""),
+            ),
+            action="reply",
+        )
+
+    known, missing, procedure, follow_up = _prepare_procedure_after_accept(
+        pending,
+        llm=llm,
+        dialogue=dialogue,
+        on_thought=on_thought,
+        trace=trace,
+    )
+    provided = _fill_missing_from_reply(
+        user_message,
+        missing=missing,
+        llm=llm,
+        dialogue=dialogue,
+    )
+    known = _merge_known(known, provided)
+    missing = _normalize_missing(missing, known)
+
+    return _next_result(
+        user_message,
+        llm=llm,
+        dialogue=dialogue,
+        known=known,
+        missing=missing,
+        procedure=procedure,
+        follow_up=follow_up,
+        registry=registry,
+        on_thought=on_thought,
+        trace=trace,
+    )
+
+
+def _prepare_procedure_after_accept(
+    pending: dict[str, Any],
+    *,
+    llm: LLMClient,
+    dialogue: list[dict[str, Any]] | None,
+    on_thought: ThoughtCallback | None,
+    trace: TraceBuilder | None,
+) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, Any]], list[str]]:
+    article_text = str(pending.get("article_text") or "").strip()
+    original_request = str(pending.get("original_request") or "").strip()
+    if len(article_text) > _MAX_ARTICLE_CHARS:
+        article_text = (
+            article_text[:_MAX_ARTICLE_CHARS]
+            + "\n[Article truncated to fit model context]"
+        )
+
+    if on_thought:
+        on_thought("Reviewing required information for execution…")
+    extracted = _extract_from_article(
+        original_request,
+        article_text=article_text,
+        llm=llm,
+        dialogue=dialogue,
+    )
+    known = _normalize_known(extracted.get("known_parameters"))
+    missing = _normalize_missing(extracted.get("missing_parameters"), known)
+    procedure = _normalize_procedure(extracted.get("procedure"))
+    follow_up = _normalize_follow_up(extracted.get("follow_up"))
+
+    if trace:
+        trace.add(
+            "procedure",
+            f"Procedure parsed · {len(procedure)} steps",
+            detail={
+                "phase": _PHASE_COLLECTING_PARAMETERS,
+                "steps": len(procedure),
+                "known_parameters": known,
+                "missing_parameters": missing,
+                "procedure": procedure,
+            },
+        )
+    return known, missing, procedure, follow_up
+
+
 def _next_result(
     user_message: str,
     *,
@@ -276,14 +420,16 @@ def _next_result(
     on_thought: ThoughtCallback | None,
     trace: TraceBuilder | None,
 ) -> RagActionResult:
-    state = {
-        "category": "RAG",
-        "kind": "rag_action",
-        "known_parameters": known,
-        "missing_parameters": missing,
-        "procedure": procedure,
-        "follow_up": follow_up,
-    }
+    state = _pending_state(
+        phase=_PHASE_COLLECTING_PARAMETERS,
+        known=known,
+        missing=missing,
+        procedure=procedure,
+        follow_up=follow_up,
+        article_id=None,
+        article_text=None,
+        original_request=None,
+    )
     if missing:
         log.info(
             "RAG action asking for missing=%s known=%s",
@@ -361,6 +507,13 @@ def _execute_procedure(
             ),
             pending=None,
             action="reply",
+        )
+
+    if trace:
+        trace.add(
+            "procedure",
+            f"Executing procedure · {len(procedure)} steps",
+            detail={"phase": "executing", "steps": len(procedure)},
         )
 
     if not registry.invokers:
@@ -1010,6 +1163,134 @@ def _fill_missing_from_reply(
     return provided
 
 
+def _pending_state(
+    *,
+    phase: str | None = None,
+    article_id: str | None = None,
+    article_text: str | None = None,
+    original_request: str | None = None,
+    known: list[dict[str, str]] | None = None,
+    missing: list[dict[str, str]] | None = None,
+    procedure: list[dict[str, Any]] | None = None,
+    follow_up: list[str] | None = None,
+) -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "category": "RAG",
+        "kind": "rag_action",
+        "known_parameters": known or [],
+        "missing_parameters": missing or [],
+        "procedure": procedure or [],
+        "follow_up": follow_up or [],
+    }
+    if phase:
+        state["phase"] = phase
+    if article_id:
+        state["article_id"] = article_id
+    if article_text:
+        state["article_text"] = article_text
+    if original_request:
+        state["original_request"] = original_request
+    return state
+
+
+def _describe_article(
+    user_message: str,
+    *,
+    article_text: str,
+    llm: LLMClient,
+    dialogue: list[dict[str, Any]] | None,
+) -> str:
+    if len(article_text) > _MAX_ARTICLE_CHARS:
+        article_text = (
+            article_text[:_MAX_ARTICLE_CHARS]
+            + "\n[Article truncated to fit model context]"
+        )
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": build_rag_procedure_describe_prompt()},
+    ]
+    messages.extend(_dialogue_as_str(dialogue or []))
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                f"User request:\n{user_message}\n\n"
+                f"Knowledge-base article:\n{article_text}"
+            ),
+        }
+    )
+    return llm.chat(messages).strip()
+
+
+def _classify_execution_confirmation(
+    user_message: str,
+    *,
+    llm: LLMClient,
+    dialogue: list[dict[str, Any]] | None,
+) -> str:
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": build_rag_procedure_confirm_prompt()},
+    ]
+    messages.extend(_dialogue_as_str(dialogue or []))
+    messages.append({"role": "user", "content": user_message})
+    raw = llm.chat(messages)
+    match = _CONFIRM_RE.search(raw or "")
+    if match:
+        return match.group(1).upper()
+    upper = (raw or "").upper()
+    for name in ("ACCEPT", "DECLINE", "UNCLEAR"):
+        if re.search(rf"\b{name}\b", upper):
+            return name
+    log.warning(
+        "RAG procedure confirmation parse failed; defaulting to UNCLEAR raw=%s",
+        (raw or "")[:200],
+    )
+    return "UNCLEAR"
+
+
+def _decline_execution(
+    user_message: str,
+    *,
+    llm: LLMClient,
+    dialogue: list[dict[str, Any]] | None,
+) -> str:
+    messages: list[dict[str, str]] = [
+        {
+            "role": "system",
+            "content": (
+                "The user declined executing the procedure you described. "
+                "Reply briefly and politely in the same language as the user. "
+                "Confirm that you will not run anything and acknowledge their choice. "
+                "Offer to help if they need anything else. No JSON."
+            ),
+        },
+    ]
+    messages.extend(_dialogue_as_str(dialogue or []))
+    messages.append({"role": "user", "content": user_message})
+    return llm.chat(messages).strip()
+
+
+def _unclear_execution_reply(
+    user_message: str,
+    *,
+    llm: LLMClient,
+    dialogue: list[dict[str, Any]] | None,
+) -> str:
+    messages: list[dict[str, str]] = [
+        {
+            "role": "system",
+            "content": (
+                "You asked whether the user wants you to execute a procedure. "
+                "Their reply was unclear. Ask again, clearly and politely, whether "
+                "they want you to execute it on their behalf. Reply in the same "
+                "language as the user. No JSON."
+            ),
+        },
+    ]
+    messages.extend(_dialogue_as_str(dialogue or []))
+    messages.append({"role": "user", "content": user_message})
+    return llm.chat(messages).strip()
+
+
 def _is_rag_action_pending(pending: dict[str, Any] | None) -> bool:
     return isinstance(pending, dict) and pending.get("kind") == "rag_action"
 
@@ -1146,7 +1427,8 @@ def _fetch_article(
     user_message: str,
     *,
     itsm_mcp: ItsmMcpClient,
-) -> Any | None:
+    trace: TraceBuilder | None = None,
+) -> _FetchedArticle | None:
     tools = [
         t
         for t in itsm_mcp.list_tools()
@@ -1167,20 +1449,76 @@ def _fetch_article(
         search_result = itsm_mcp.call_tool("rag_search_kb", search_args)
     except Exception:
         log.exception("RAG action search failed")
+        if trace:
+            trace.add(
+                "tool_call",
+                "ITSM · rag_search_kb",
+                status="error",
+                detail={"tool": "rag_search_kb", "arguments": search_args},
+                parallel_group="ITSM",
+            )
         return None
+
+    if trace:
+        trace.add(
+            "tool_call",
+            "ITSM · rag_search_kb",
+            detail={"tool": "rag_search_kb", "arguments": search_args},
+            parallel_group="ITSM",
+        )
 
     article_id = _extract_article_id(search_result)
     if not article_id:
         log.info("RAG action search returned no article id")
+        if trace:
+            trace.add(
+                "article",
+                "No knowledge article found",
+                status="error",
+                detail={"tool": "rag_search_kb"},
+            )
         return None
 
     detail_args = _article_id_arguments(by_name["get_kb_article"], article_id)
     log.info("RAG action get_kb_article arguments=%s", detail_args)
     try:
-        return itsm_mcp.call_tool("get_kb_article", detail_args)
-    except Exception:
+        payload = itsm_mcp.call_tool("get_kb_article", detail_args)
+    except Exception as exc:
         log.exception("RAG action get_kb_article failed id=%s", article_id)
+        if trace:
+            trace.add(
+                "tool_call",
+                "ITSM · get_kb_article",
+                status="error",
+                detail={
+                    "tool": "get_kb_article",
+                    "arguments": detail_args,
+                    "article_id": article_id,
+                    "error": str(exc),
+                },
+                parallel_group="ITSM",
+            )
         return None
+
+    if trace:
+        trace.add(
+            "tool_call",
+            "ITSM · get_kb_article",
+            detail={
+                "tool": "get_kb_article",
+                "arguments": detail_args,
+                "article_id": article_id,
+            },
+            parallel_group="ITSM",
+        )
+        trace.add(
+            "article",
+            f"Article found · {article_id}",
+            detail={"article_id": article_id, "tool": "get_kb_article"},
+        )
+
+    text = _article_text(payload)
+    return _FetchedArticle(payload=payload, article_id=article_id, text=text)
 
 
 def _not_found(
