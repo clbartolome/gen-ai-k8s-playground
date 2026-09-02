@@ -23,19 +23,33 @@ let state = loadState();
 let openThreadId = null;
 /** @type {Set<string>} */
 const busyParents = new Set();
+const INFO_POLL_MS = 2000;
+const INCIDENT_POLL_MS = 2000;
+
+const INCIDENT_AVATAR_ICON =
+  '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+  '<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>' +
+  '<path d="M12 9v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+  '<circle cx="12" cy="17" r="1" fill="currentColor"/>' +
+  "</svg>";
 
 /**
  * @typedef {{
  *   id: string,
  *   text: string,
  *   createdAt: number,
+ *   kind?: "message" | "incident",
+ *   incidentId?: string,
+ *   title?: string,
+ *   severity?: string,
  *   agentThreadId: string | null,
+ *   lastReadAt?: number,
  *   replies: Reply[],
  * }} ChannelMessage
  *
  * @typedef {{
  *   id: string,
- *   role: "user" | "agent" | "thought" | "error",
+ *   role: "user" | "agent" | "thought" | "error" | "info",
  *   text: string,
  *   createdAt: number,
  * }} Reply
@@ -51,10 +65,42 @@ function loadState() {
     if (!raw) return { messages: [] };
     const parsed = JSON.parse(raw);
     if (!parsed || !Array.isArray(parsed.messages)) return { messages: [] };
+    parsed.messages = parsed.messages.map(normalizeMessage);
     return parsed;
   } catch {
     return { messages: [] };
   }
+}
+
+function normalizeMessage(msg) {
+  if (msg.lastReadAt != null) return msg;
+  const replies = visibleReplies(msg.replies || []);
+  msg.lastReadAt = replies.length
+    ? Math.max(...replies.map((r) => r.createdAt))
+    : msg.createdAt;
+  return msg;
+}
+
+function getLastReadAt(msg) {
+  return msg.lastReadAt ?? msg.createdAt;
+}
+
+function unreadCount(msg) {
+  if (openThreadId === msg.id) return 0;
+  const lastRead = getLastReadAt(msg);
+  return visibleReplies(msg.replies).filter((r) => r.createdAt > lastRead).length;
+}
+
+function hasUnread(msg) {
+  return unreadCount(msg) > 0;
+}
+
+function markThreadRead(msg) {
+  const replies = visibleReplies(msg.replies);
+  msg.lastReadAt = replies.length
+    ? Math.max(...replies.map((r) => r.createdAt))
+    : msg.createdAt;
+  saveState();
 }
 
 function saveState() {
@@ -81,13 +127,23 @@ function formatTime(ts) {
 function authorLabel(role) {
   if (role === "user") return "Tú";
   if (role === "agent") return "Agent";
+  if (role === "info") return "Info";
+  if (role === "incident") return "Incident";
   if (role === "thought") return "Thinking";
   return "Error";
 }
 
-function avatarInitial(role) {
+function avatarInitial(role, authorName = null) {
+  if (authorName) {
+    const words = authorName.trim().split(/\s+/).filter(Boolean);
+    if (words.length >= 2) {
+      return (words[0][0] + words[1][0]).toUpperCase();
+    }
+    return authorName.slice(0, 2).toUpperCase();
+  }
   if (role === "user") return "TÚ";
   if (role === "agent") return "AI";
+  if (role === "info") return "i";
   if (role === "thought") return "…";
   return "!";
 }
@@ -121,6 +177,12 @@ function scrollThreadBottom() {
 
 function findMessage(parentId) {
   return state.messages.find((m) => m.id === parentId) || null;
+}
+
+function findMessageByAgentThreadId(agentThreadId) {
+  return (
+    state.messages.find((m) => m.agentThreadId === agentThreadId) || null
+  );
 }
 
 function visibleReplies(replies) {
@@ -291,10 +353,13 @@ function buildMsgEl(opts) {
     onClick = null,
     active = false,
     replyCount = 0,
+    unread = 0,
+    severity = null,
+    authorName = null,
   } = opts;
 
   const row = document.createElement("article");
-  row.className = `msg${pending ? " pending" : ""}${active ? " active-thread" : ""}`;
+  row.className = `msg${pending ? " pending" : ""}${active ? " active-thread" : ""}${unread > 0 ? " has-unread" : ""}`;
   if (onClick) {
     row.style.cursor = "pointer";
     row.addEventListener("click", (event) => {
@@ -304,8 +369,13 @@ function buildMsgEl(opts) {
   }
 
   const avatar = document.createElement("div");
-  avatar.className = `msg-avatar ${role}`;
-  avatar.textContent = avatarInitial(role);
+  if (role === "incident") {
+    avatar.className = "msg-avatar incident";
+    avatar.innerHTML = INCIDENT_AVATAR_ICON;
+  } else {
+    avatar.className = `msg-avatar ${role}`;
+    avatar.textContent = avatarInitial(role, authorName);
+  }
   avatar.setAttribute("aria-hidden", "true");
   row.appendChild(avatar);
 
@@ -317,12 +387,36 @@ function buildMsgEl(opts) {
 
   const author = document.createElement("span");
   author.className = "msg-author";
-  author.textContent = authorLabel(role);
+  author.textContent = authorName || authorLabel(role);
+  if (unread > 0) {
+    const dot = document.createElement("span");
+    dot.className = "unread-dot";
+    dot.setAttribute("aria-label", `${unread} sin leer`);
+    author.appendChild(dot);
+  }
   if (role === "agent") {
     const tag = document.createElement("span");
     tag.className = "ai-tag";
     tag.textContent = "AI";
     author.appendChild(tag);
+  }
+  if (role === "info") {
+    const tag = document.createElement("span");
+    tag.className = "info-tag";
+    tag.textContent = "Info";
+    author.appendChild(tag);
+  }
+  if (role === "incident") {
+    const tag = document.createElement("span");
+    tag.className = "incident-tag";
+    tag.textContent = "INCIDENT";
+    author.appendChild(tag);
+    if (severity && severity.toLowerCase() !== "unknown") {
+      const sev = document.createElement("span");
+      sev.className = `incident-severity severity-${severity.toLowerCase()}`;
+      sev.textContent = severity.toUpperCase();
+      author.appendChild(sev);
+    }
   }
   meta.appendChild(author);
 
@@ -333,7 +427,7 @@ function buildMsgEl(opts) {
   body.appendChild(meta);
 
   const textEl = document.createElement("div");
-  textEl.className = `msg-text${markdown ? " md" : ""}${role === "thought" ? " thought" : ""}${role === "error" ? " error" : ""}`;
+  textEl.className = `msg-text${markdown ? " md" : ""}${role === "thought" ? " thought" : ""}${role === "error" ? " error" : ""}${role === "info" ? " info" : ""}`;
   if (markdown && role === "agent") {
     textEl.innerHTML = renderMarkdown(text);
   } else {
@@ -347,10 +441,10 @@ function buildMsgEl(opts) {
   }
   body.appendChild(textEl);
 
-  if (replyCount > 0) {
+  if (replyCount > 0 || unread > 0) {
     const bar = document.createElement("button");
     bar.type = "button";
-    bar.className = "reply-bar";
+    bar.className = `reply-bar${unread > 0 ? " has-unread" : ""}`;
     bar.addEventListener("click", (event) => {
       event.stopPropagation();
       onClick && onClick();
@@ -362,8 +456,13 @@ function buildMsgEl(opts) {
     bar.appendChild(faces);
 
     const label = document.createElement("span");
-    label.textContent =
-      replyCount === 1 ? "1 respuesta" : `${replyCount} respuestas`;
+    if (unread > 0) {
+      label.textContent =
+        unread === 1 ? "1 mensaje sin leer" : `${unread} mensajes sin leer`;
+    } else {
+      label.textContent =
+        replyCount === 1 ? "1 respuesta" : `${replyCount} respuestas`;
+    }
     bar.appendChild(label);
     body.appendChild(bar);
   }
@@ -393,12 +492,17 @@ function renderChannel() {
 
   for (const msg of state.messages) {
     const count = visibleReplies(msg.replies).length;
+    const unread = unreadCount(msg);
+    const isIncident = msg.kind === "incident";
     const row = buildMsgEl({
-      role: "user",
+      role: isIncident ? "incident" : "user",
       text: msg.text,
       createdAt: msg.createdAt,
       active: openThreadId === msg.id,
       replyCount: count,
+      unread,
+      severity: isIncident ? msg.severity : null,
+      authorName: isIncident ? msg.title : null,
       onClick: () => openThread(msg.id),
     });
     row.dataset.parentId = msg.id;
@@ -416,11 +520,14 @@ function renderThread(parentId) {
   }
 
   threadParentEl.innerHTML = "";
+  const isIncident = msg.kind === "incident";
   threadParentEl.appendChild(
     buildMsgEl({
-      role: "user",
+      role: isIncident ? "incident" : "user",
       text: msg.text,
       createdAt: msg.createdAt,
+      severity: isIncident ? msg.severity : null,
+      authorName: isIncident ? msg.title : null,
     })
   );
 
@@ -478,6 +585,7 @@ function openThread(parentId) {
   if (!msg) return;
 
   openThreadId = parentId;
+  markThreadRead(msg);
   threadPanel.hidden = false;
   workspace.classList.add("thread-open");
   renderChannel();
@@ -515,7 +623,11 @@ function appendReply(parentId, reply) {
   const msg = findMessage(parentId);
   if (!msg) return;
   msg.replies.push(reply);
-  saveState();
+  if (openThreadId === parentId && reply.role !== "thought") {
+    markThreadRead(msg);
+  } else {
+    saveState();
+  }
   if (openThreadId === parentId) {
     if (reply.role === "thought") {
       upsertThoughtStack(parentId);
@@ -533,7 +645,120 @@ function setAgentThreadId(parentId, agentThreadId) {
   saveState();
 }
 
-async function runAgentTurn(parentId, message, { isNewThread }) {
+function knownAgentThreadIds() {
+  return [
+    ...new Set(
+      state.messages
+        .map((m) => m.agentThreadId)
+        .filter((id) => typeof id === "string" && id.length > 0)
+    ),
+  ];
+}
+
+async function pollInfoMessages() {
+  const threadIds = knownAgentThreadIds();
+  if (!threadIds.length) return;
+
+  try {
+    const res = await fetch(
+      `/threads/info?ids=${encodeURIComponent(threadIds.join(","))}`
+    );
+    if (!res.ok) return;
+    const data = await res.json();
+    const messages = data.messages || [];
+    if (!messages.length) return;
+
+    for (const item of messages) {
+      const parent = findMessageByAgentThreadId(item.thread_id);
+      if (!parent) continue;
+
+      const already = (parent.replies || []).some((r) => r.id === item.id);
+      if (already) continue;
+
+      appendReply(parent.id, {
+        id: item.id,
+        role: "info",
+        text: item.message,
+        createdAt: item.created_at || Date.now(),
+      });
+    }
+  } catch {
+    // Ignore transient poll errors.
+  }
+}
+
+function startInfoPolling() {
+  pollInfoMessages();
+  setInterval(pollInfoMessages, INFO_POLL_MS);
+}
+
+function incidentDisplayText(incident) {
+  return (incident.message || "").trim() || incident.title || "Incident";
+}
+
+function formatIncidentForAgent(incident) {
+  const parts = ["[INCIDENT ALERT]"];
+  if (incident.title) parts.push(`Title: ${incident.title}`);
+  if (incident.message) parts.push(`Description: ${incident.message}`);
+  if (incident.severity && incident.severity !== "unknown") {
+    parts.push(`Severity: ${incident.severity}`);
+  }
+  parts.push(
+    "Find a knowledge-base remediation procedure for this incident and offer autoremediation."
+  );
+  return parts.join("\n");
+}
+
+async function ingestIncident(incident) {
+  if (state.messages.some((m) => m.incidentId === incident.id)) return;
+
+  const parent = {
+    id: uid(),
+    kind: "incident",
+    incidentId: incident.id,
+    title: incident.title,
+    severity: incident.severity,
+    text: incidentDisplayText(incident),
+    createdAt: incident.created_at || Date.now(),
+    agentThreadId: null,
+    replies: [],
+  };
+  state.messages.push(parent);
+  saveState();
+  renderChannel();
+  scrollChannelBottom();
+
+  void runAgentTurn(parent.id, formatIncidentForAgent(incident), {
+    isNewThread: true,
+    forceCategory: "RAG",
+    source: "incident",
+    incident: {
+      title: incident.title,
+      message: incident.message,
+      severity: incident.severity,
+    },
+  });
+}
+
+async function pollIncidents() {
+  try {
+    const res = await fetch("/incidents");
+    if (!res.ok) return;
+    const data = await res.json();
+    for (const incident of data.incidents || []) {
+      ingestIncident(incident);
+    }
+  } catch {
+    // Ignore transient poll errors.
+  }
+}
+
+function startIncidentPolling() {
+  pollIncidents();
+  setInterval(pollIncidents, INCIDENT_POLL_MS);
+}
+
+async function runAgentTurn(parentId, message, { isNewThread, forceCategory, source, incident }) {
   const msg = findMessage(parentId);
   if (!msg) return;
 
@@ -543,6 +768,15 @@ async function runAgentTurn(parentId, message, { isNewThread }) {
   const payload = { message };
   if (!isNewThread && msg.agentThreadId) {
     payload.thread_id = msg.agentThreadId;
+  }
+  if (forceCategory) {
+    payload.category = forceCategory;
+  }
+  if (source) {
+    payload.source = source;
+  }
+  if (incident) {
+    payload.incident = incident;
   }
 
   try {
@@ -659,9 +893,11 @@ channelForm.addEventListener("submit", async (event) => {
 
   const parent = {
     id: uid(),
+    kind: "message",
     text,
     createdAt: Date.now(),
     agentThreadId: null,
+    lastReadAt: Date.now(),
     replies: [],
   };
   state.messages.push(parent);
@@ -710,3 +946,5 @@ threadForm.addEventListener("submit", async (event) => {
 
 renderChannel();
 channelInput.focus();
+startInfoPolling();
+startIncidentPolling();

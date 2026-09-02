@@ -88,6 +88,95 @@ make local-run
 
 Open **Chat** at http://localhost:5000 and **Monitor** at http://localhost:5100.
 
+## Chat API
+
+The chat service exposes HTTP endpoints to push messages into the UI from external systems (monitoring, ITSM, automation, etc.). The browser polls these endpoints and renders the messages in the Slack-style channel.
+
+Base URL: `http://localhost:5000` (or the chat route in OpenShift).
+
+### Info messages
+
+Push an informational message into an **existing thread**. Info messages are displayed in the thread as **Info** (they are **not** sent to the agent).
+
+**POST** `/threads/<thread_id>/info`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `message` | string | yes | Text shown in the thread |
+
+`thread_id` is the agent thread ID (`agentThreadId` in the chat UI), assigned after the first agent reply in that thread.
+
+**Example**
+
+```bash
+curl -X POST http://localhost:5000/threads/<thread_id>/info \
+  -H "Content-Type: application/json" \
+  -d '{"message": "El despliegue ha finalizado correctamente."}'
+```
+
+**Response** `201`
+
+```json
+{
+  "id": "uuid",
+  "thread_id": "uuid",
+  "message": "El despliegue ha finalizado correctamente.",
+  "created_at": 1756800000000
+}
+```
+
+The UI polls `GET /threads/info?ids=<thread_id>,...` and dequeues pending info messages for the open threads.
+
+### Incident alerts
+
+Push an **incident alert** into the channel. Incidents appear as a new channel message (with an **INCIDENT** badge and severity), are **automatically sent to the agent** for remediation (same RAG / autoremediation flow as a documented procedure), and support unread indicators like any other thread reply.
+
+**POST** `/incidents`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `title` | string | one of `title` / `message` | Short incident title (shown as the message author in the UI) |
+| `message` | string | one of `title` / `message` | Incident description / details |
+| `severity` | string | no | Severity level (see below). Default: `unknown` |
+
+**Severity values**
+
+| Value | Typical use |
+|-------|-------------|
+| `critical` | Service down, major outage, immediate action |
+| `high` | Serious degradation, urgent remediation |
+| `medium` | Notable issue, should be addressed soon |
+| `low` | Minor issue, low urgency |
+| `warning` | Early warning / threshold crossed (alias of medium in the UI) |
+| `info` | Informational alert, no immediate action |
+| `unknown` | Severity not specified (default) |
+
+**Example**
+
+```bash
+curl -X POST http://localhost:5000/incidents \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "High CPU on web-server-prod",
+    "message": "CPU utilization above 95% for 10 minutes on node worker-03.",
+    "severity": "critical"
+  }'
+```
+
+**Response** `201`
+
+```json
+{
+  "id": "uuid",
+  "title": "High CPU on web-server-prod",
+  "message": "CPU utilization above 95% for 10 minutes on node worker-03.",
+  "severity": "critical",
+  "created_at": 1756800000000
+}
+```
+
+The UI polls `GET /incidents`, ingests each alert, and starts agent processing with `category: RAG` (knowledge-base remediation lookup and autoremediation offer).
+
 ## OpenShift deployment
 
 ### Build and push images

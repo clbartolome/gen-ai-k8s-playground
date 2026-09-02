@@ -70,42 +70,54 @@ class ReactAgent:
         dialogue: list[dict[str, Any]] | None = None,
         pending: dict[str, Any] | None = None,
         last_category: str | None = None,
+        forced_category: str | None = None,
         on_thought: ThoughtCallback | None = None,
         trace: TraceBuilder | None = None,
     ) -> TurnOutcome:
         prior = _fit_dialogue(dialogue or [], max_chars=_MAX_DIALOGUE_CHARS)
-        if on_thought:
-            on_thought("Classifying your request…")
-        category = self._resolve_category(
-            user_message,
-            dialogue=prior,
-            pending=pending,
-            last_category=last_category,
-        )
-        log.info(
-            "Routed category=%s dialogue_turns=%s pending=%s last_category=%s",
-            category,
-            len(prior),
-            bool(pending),
-            last_category,
-        )
-        if on_thought:
-            on_thought(f"Classified as {category}")
-        if trace:
-            continuing = isinstance(pending, dict) and (
-                pending.get("kind") == "rag_action" or bool(pending.get("question"))
-            )
-            if continuing:
+        if forced_category and forced_category in _VALID_CATEGORIES:
+            category = forced_category
+            if on_thought:
+                on_thought(f"Classified as {category}")
+            if trace:
                 trace.add(
-                    "user_input",
-                    "User provided details",
-                    detail={"message": user_message},
+                    "classified",
+                    f"Classified as {category}",
+                    detail={"category": category, "forced": True},
                 )
-            trace.add(
-                "classified",
-                f"Classified as {category}",
-                detail={"category": category},
+        else:
+            if on_thought:
+                on_thought("Classifying your request…")
+            category = self._resolve_category(
+                user_message,
+                dialogue=prior,
+                pending=pending,
+                last_category=last_category,
             )
+            log.info(
+                "Routed category=%s dialogue_turns=%s pending=%s last_category=%s",
+                category,
+                len(prior),
+                bool(pending),
+                last_category,
+            )
+            if on_thought:
+                on_thought(f"Classified as {category}")
+            if trace:
+                continuing = isinstance(pending, dict) and (
+                    pending.get("kind") == "rag_action" or bool(pending.get("question"))
+                )
+                if continuing:
+                    trace.add(
+                        "user_input",
+                        "User provided details",
+                        detail={"message": user_message},
+                    )
+                trace.add(
+                    "classified",
+                    f"Classified as {category}",
+                    detail={"category": category},
+                )
 
         if category == "OUT_CONTEXT":
             response = self._out_context(user_message, dialogue=prior)

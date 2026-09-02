@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import { useEffect, useMemo, useState } from 'react'
-import { getNodeVisual } from '../utils/nodeVisual'
+import { getNodeVisual, formatNodeType } from '../utils/nodeVisual'
 import NodeIcon, { LaneLogo } from './NodeIcon'
 
 const STEP_MS = 520
@@ -184,7 +184,7 @@ function TraceNode({ node, interactive, selected, onSelect, lane = false }) {
         <p className="type">{visual.label}</p>
       </div>
       <p className="label">{node.label}</p>
-      <p className="node-kind">{node.type?.replaceAll('_', ' ')}</p>
+      <p className="node-kind">{formatNodeType(node.type)}</p>
     </button>
   )
 }

@@ -10,6 +10,7 @@ from typing import Any
 NODE_TYPES = frozenset(
     {
         "user_message",
+        "incident",
         "classified",
         "rag_intent",
         "article",
@@ -88,10 +89,18 @@ class TraceBuilder:
         node_id = f"n{self._seq}"
         kind = node_type if node_type in NODE_TYPES else "step"
         payload = detail or {}
-        if kind == "user_message" and not self._root_message:
-            message = payload.get("message")
-            if isinstance(message, str) and message.strip():
-                self._root_message = message.strip()
+        if kind in {"user_message", "incident"} and not self._root_message:
+            if kind == "incident":
+                title = payload.get("title")
+                message = payload.get("message")
+                if isinstance(title, str) and title.strip():
+                    self._root_message = title.strip()
+                elif isinstance(message, str) and message.strip():
+                    self._root_message = message.strip()
+            else:
+                message = payload.get("message")
+                if isinstance(message, str) and message.strip():
+                    self._root_message = message.strip()
         self._nodes.append(
             {
                 "id": node_id,

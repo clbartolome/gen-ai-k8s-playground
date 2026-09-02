@@ -1,8 +1,10 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { getNodeVisual } from '../utils/nodeVisual'
+import { getNodeVisual, formatNodeType } from '../utils/nodeVisual'
 import NodeIcon from './NodeIcon'
 
 const PRIORITY_KEYS = [
+  'title',
+  'severity',
   'message',
   'question',
   'category',
@@ -69,7 +71,7 @@ export default function NodeModal({ node, open, onClose }) {
                     {visual.label}
                   </span>
                 ) : null}
-                <span className="node-pill muted">{node.type?.replaceAll('_', ' ')}</span>
+                <span className="node-pill muted">{formatNodeType(node.type)}</span>
               </div>
               <button type="button" className="modal-close" onClick={onClose} aria-label="Close">
                 ×

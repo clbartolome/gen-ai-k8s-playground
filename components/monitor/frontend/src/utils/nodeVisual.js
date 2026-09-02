@@ -57,6 +57,14 @@ const USER_STYLE = {
   neutral: true,
 }
 
+const INCIDENT_STYLE = {
+  label: 'Incident',
+  short: '⚠',
+  logoId: null,
+  color: '#e8913a',
+  glow: 'rgba(232, 145, 58, 0.22)',
+}
+
 const SYSTEM_STYLE = {
   label: 'System',
   short: '!',
@@ -86,6 +94,7 @@ function resolveDomain(node) {
 
 function resolveRole(node) {
   const type = node.type || ''
+  if (type === 'incident') return 'incident'
   if (type === 'user_message' || type === 'user_input') return 'user'
   if (type === 'tool_call' || type === 'step') return 'mcp'
   if (type === 'error') return 'system'
@@ -106,6 +115,9 @@ export function getNodeVisual(node) {
   const role = resolveRole(node)
   const domain = role === 'mcp' ? resolveDomain(node) : null
 
+  if (role === 'incident') {
+    return { role, domain: null, ...INCIDENT_STYLE }
+  }
   if (role === 'user') {
     return { role, domain: null, ...USER_STYLE }
   }
@@ -132,6 +144,13 @@ export function getNodeVisual(node) {
 export function getLogoSrc(logoId) {
   if (!logoId) return null
   return NODE_LOGOS[logoId] || null
+}
+
+export function formatNodeType(type) {
+  if (type === 'user_message') return 'User message'
+  if (type === 'user_input') return 'User input'
+  if (type === 'incident') return 'Incident'
+  return String(type || '').replaceAll('_', ' ')
 }
 
 export function parseThreadPreview(item) {

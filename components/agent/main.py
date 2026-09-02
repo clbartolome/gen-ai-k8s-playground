@@ -51,7 +51,23 @@ def _append_thought(run_id: str, text: str) -> None:
         run.setdefault("thoughts", []).append({"text": text})
 
 
-def _process_run(run_id: str, thread_id: str, user_message: str) -> None:
+def _incident_trace_label(incident: dict | None, fallback_message: str) -> str:
+    if isinstance(incident, dict):
+        title = str(incident.get("title") or "").strip()
+        if title:
+            return title
+    return "Incident alert"
+
+
+def _process_run(
+    run_id: str,
+    thread_id: str,
+    user_message: str,
+    *,
+    forced_category: str | None = None,
+    source: str | None = None,
+    incident: dict | None = None,
+) -> None:
     existing = trace_store.get_trace(thread_id)
     _, thread = thread_store.get_or_create(thread_id)
     pending = thread.get("pending")
@@ -67,11 +83,25 @@ def _process_run(run_id: str, thread_id: str, user_message: str) -> None:
     # First ask of a thread (or a new ask after the previous turn finished).
     # Clarifying replies are recorded as user_input inside ReactAgent.
     if not continuing:
-        trace.add(
-            "user_message",
-            "User message",
-            detail={"message": user_message},
-        )
+        if source == "incident":
+            incident_detail: dict = {"message": user_message}
+            if isinstance(incident, dict):
+                incident_detail = {
+                    "title": incident.get("title"),
+                    "message": incident.get("message") or user_message,
+                    "severity": incident.get("severity"),
+                }
+            trace.add(
+                "incident",
+                _incident_trace_label(incident, user_message),
+                detail=incident_detail,
+            )
+        else:
+            trace.add(
+                "user_message",
+                "User message",
+                detail={"message": user_message},
+            )
 
     root_message = trace.root_message or user_message
     trace_store.upsert(
@@ -89,6 +119,7 @@ def _process_run(run_id: str, thread_id: str, user_message: str) -> None:
             dialogue=thread.get("dialogue") or [],
             pending=pending,
             last_category=thread.get("last_category"),
+            forced_category=forced_category,
             on_thought=lambda text: _append_thought(run_id, text),
             trace=trace,
         )
@@ -164,6 +195,22 @@ def message():
         requested_thread_id = None
     requested_thread_id = (requested_thread_id or "").strip() or None
 
+    forced_category = data.get("category")
+    if not isinstance(forced_category, str) or not forced_category.strip():
+        forced_category = None
+    else:
+        forced_category = forced_category.strip().upper()
+
+    source = data.get("source")
+    if not isinstance(source, str) or not source.strip():
+        source = None
+    else:
+        source = source.strip().lower()
+
+    incident = data.get("incident")
+    if not isinstance(incident, dict):
+        incident = None
+
     thread_id, _ = thread_store.get_or_create(requested_thread_id)
 
     run_id = str(uuid.uuid4())
@@ -184,6 +231,11 @@ def message():
     threading.Thread(
         target=_process_run,
         args=(run_id, thread_id, user_message),
+        kwargs={
+            "forced_category": forced_category,
+            "source": source,
+            "incident": incident,
+        },
         daemon=True,
     ).start()
     return jsonify({"run_id": run_id, "thread_id": thread_id})

@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -14,6 +15,12 @@ AGENT_TIMEOUT = float(os.environ.get("AGENT_TIMEOUT", "120"))
 
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
+
+pending_info: dict[str, list[dict]] = {}
+pending_info_lock = threading.Lock()
+
+pending_incidents: list[dict] = []
+pending_incidents_lock = threading.Lock()
 
 
 def _agent_json(method: str, path: str, body: dict | None = None) -> dict:
@@ -31,11 +38,24 @@ def _agent_json(method: str, path: str, body: dict | None = None) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def process_job(job_id: str, message: str, thread_id: str | None = None) -> None:
+def process_job(
+    job_id: str,
+    message: str,
+    thread_id: str | None = None,
+    category: str | None = None,
+    source: str | None = None,
+    incident: dict | None = None,
+) -> None:
     try:
         body: dict = {"message": message}
         if thread_id:
             body["thread_id"] = thread_id
+        if category:
+            body["category"] = category
+        if source:
+            body["source"] = source
+        if incident:
+            body["incident"] = incident
 
         start = _agent_json("POST", "/message", body)
         run_id = start["run_id"]
@@ -96,6 +116,22 @@ def ask():
     else:
         thread_id = thread_id.strip()
 
+    category = data.get("category")
+    if not isinstance(category, str) or not category.strip():
+        category = None
+    else:
+        category = category.strip().upper()
+
+    source = data.get("source")
+    if not isinstance(source, str) or not source.strip():
+        source = None
+    else:
+        source = source.strip().lower()
+
+    incident = data.get("incident")
+    if not isinstance(incident, dict):
+        incident = None
+
     job_id = str(uuid.uuid4())
     with jobs_lock:
         jobs[job_id] = {
@@ -105,7 +141,9 @@ def ask():
         }
 
     threading.Thread(
-        target=process_job, args=(job_id, message, thread_id), daemon=True
+        target=process_job,
+        args=(job_id, message, thread_id, category, source, incident),
+        daemon=True,
     ).start()
     return jsonify({"job_id": job_id, "thread_id": thread_id})
 
@@ -117,6 +155,78 @@ def job_status(job_id: str):
     if job is None:
         return jsonify({"error": "job not found"}), 404
     return jsonify(job)
+
+
+@app.post("/threads/<thread_id>/info")
+def post_thread_info(thread_id: str):
+    data = request.get_json(silent=True) or {}
+    message = data.get("message", "").strip()
+    if not message:
+        return jsonify({"error": "message is required"}), 400
+
+    thread_id = thread_id.strip()
+    if not thread_id:
+        return jsonify({"error": "thread_id is required"}), 400
+
+    entry = {
+        "id": str(uuid.uuid4()),
+        "thread_id": thread_id,
+        "message": message,
+        "created_at": int(time.time() * 1000),
+    }
+
+    with pending_info_lock:
+        pending_info.setdefault(thread_id, []).append(entry)
+
+    return jsonify(entry), 201
+
+
+@app.get("/threads/info")
+def poll_thread_info():
+    raw_ids = request.args.get("ids", "")
+    thread_ids = [item.strip() for item in raw_ids.split(",") if item.strip()]
+    if not thread_ids:
+        return jsonify({"messages": []})
+
+    messages: list[dict] = []
+    with pending_info_lock:
+        for thread_id in thread_ids:
+            queued = pending_info.pop(thread_id, [])
+            messages.extend(queued)
+
+    return jsonify({"messages": messages})
+
+
+@app.post("/incidents")
+def post_incident():
+    data = request.get_json(silent=True) or {}
+    title = data.get("title", "").strip()
+    message = data.get("message", "").strip()
+    severity = data.get("severity", "").strip()
+
+    if not message and not title:
+        return jsonify({"error": "title or message is required"}), 400
+
+    entry = {
+        "id": str(uuid.uuid4()),
+        "title": title or "Incident",
+        "message": message,
+        "severity": severity or "unknown",
+        "created_at": int(time.time() * 1000),
+    }
+
+    with pending_incidents_lock:
+        pending_incidents.append(entry)
+
+    return jsonify(entry), 201
+
+
+@app.get("/incidents")
+def poll_incidents():
+    with pending_incidents_lock:
+        incidents = list(pending_incidents)
+        pending_incidents.clear()
+    return jsonify({"incidents": incidents})
 
 
 if __name__ == "__main__":

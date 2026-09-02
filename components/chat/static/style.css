@@ -29,6 +29,7 @@
   --thought-avatar: #6b6e74;
   --error: #e01e5a;
   --error-bg: rgba(224, 30, 90, 0.12);
+  --incident-bg: rgba(232, 145, 58, 0.14);
 
   --composer-bg: #222529;
   --radius: 8px;
@@ -303,6 +304,20 @@ textarea {
   background: var(--error);
 }
 
+.msg-avatar.info {
+  background: #2d9f8f;
+}
+
+.msg-avatar.incident {
+  background: #c46d1a;
+  color: #fff;
+}
+
+.msg-avatar.incident svg {
+  width: 20px;
+  height: 20px;
+}
+
 .msg-body {
   min-width: 0;
 }
@@ -331,6 +346,62 @@ textarea {
   color: var(--accent);
   background: var(--accent-soft);
   vertical-align: middle;
+}
+
+.msg-author .info-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #5eead4;
+  background: rgba(45, 159, 143, 0.2);
+  vertical-align: middle;
+}
+
+.msg-author .incident-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #ffd9a8;
+  background: var(--incident-bg);
+  border: 1px solid rgba(232, 145, 58, 0.35);
+  vertical-align: middle;
+}
+
+.incident-severity {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.incident-severity.severity-critical,
+.incident-severity.severity-high {
+  color: #ffb3c5;
+  background: var(--error-bg);
+}
+
+.incident-severity.severity-medium,
+.incident-severity.severity-warning {
+  color: #ffd9a8;
+  background: var(--incident-bg);
+}
+
+.incident-severity.severity-low,
+.incident-severity.severity-info {
+  color: #b8f0e6;
+  background: rgba(45, 159, 143, 0.2);
 }
 
 .msg-time {
@@ -604,6 +675,10 @@ textarea {
   color: #ffb3c5;
 }
 
+.msg-text.info {
+  color: #b8f0e6;
+}
+
 .msg.pending .msg-text {
   color: var(--muted);
 }
@@ -652,6 +727,30 @@ textarea {
 .msg.active-thread {
   background: rgba(29, 155, 209, 0.08);
   box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.msg.has-unread .msg-author {
+  color: var(--text-strong);
+}
+
+.unread-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+.reply-bar.has-unread {
+  color: var(--text-strong);
+  background: var(--accent-soft);
+}
+
+.reply-bar.has-unread .reply-faces span {
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 /* —— Thread panel —— */
