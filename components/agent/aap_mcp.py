@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextvars
+import copy
 import json
 import logging
 import urllib.error
@@ -13,6 +15,69 @@ from http_util import ssl_context_for
 from logutil import mask_secret
 
 log = logging.getLogger("agent.aap_mcp")
+
+LAUNCH_TOOLS_WITH_EXTRA_VARS = frozenset(
+    {
+        "workflow_job_templates_launch_create",
+        "job_templates_launch_create",
+    }
+)
+
+_REQUEST_BODY_KEYS = ("request_body", "requestBody")
+
+_thread_id_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "aap_thread_id",
+    default=None,
+)
+
+
+def set_aap_thread_context(thread_id: str | None) -> None:
+    """Bind the current agent thread id for downstream AAP tool calls."""
+    _thread_id_ctx.set(thread_id)
+
+
+def inject_thread_id_into_arguments(
+    arguments: dict[str, Any] | None,
+    *,
+    tool_name: str,
+    thread_id: str | None,
+) -> dict[str, Any]:
+    """Merge thread_id into extra_vars without removing existing values."""
+    if not thread_id:
+        return dict(arguments or {})
+
+    args = copy.deepcopy(arguments or {})
+
+    located = _find_request_body(args)
+    if located is not None:
+        _, body = located
+        body["extra_vars"] = _merge_thread_id(body.get("extra_vars"), thread_id)
+        return args
+
+    if "extra_vars" in args:
+        args["extra_vars"] = _merge_thread_id(args.get("extra_vars"), thread_id)
+        return args
+
+    if tool_name in LAUNCH_TOOLS_WITH_EXTRA_VARS:
+        args["request_body"] = {
+            "extra_vars": _merge_thread_id(None, thread_id),
+        }
+
+    return args
+
+
+def _find_request_body(args: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    for key in _REQUEST_BODY_KEYS:
+        body = args.get(key)
+        if isinstance(body, dict):
+            return key, body
+    return None
+
+
+def _merge_thread_id(extra_vars: Any, thread_id: str) -> dict[str, Any]:
+    merged = copy.deepcopy(extra_vars) if isinstance(extra_vars, dict) else {}
+    merged.setdefault("thread_id", thread_id)
+    return merged
 
 
 class AapMcpClient:
@@ -196,10 +261,22 @@ class AapMcpClient:
 
     def call_tool(self, name: str, arguments: dict | None = None) -> Any:
         """Call a tool on the AAP MCP server (tools/call)."""
-        log.info("AAP MCP tools/call name=%s arguments=%s", name, arguments or {})
+        thread_id = _thread_id_ctx.get()
+        prepared = inject_thread_id_into_arguments(
+            arguments,
+            tool_name=name,
+            thread_id=thread_id,
+        )
+        if prepared != (arguments or {}):
+            log.info(
+                "AAP MCP tools/call name=%s injected thread_id=%s",
+                name,
+                thread_id,
+            )
+        log.info("AAP MCP tools/call name=%s arguments=%s", name, prepared)
         result = self._rpc(
             "tools/call",
-            {"name": name, "arguments": arguments or {}},
+            {"name": name, "arguments": prepared},
         )
         normalized = self._normalize_tool_result(result)
         preview = json.dumps(normalized, ensure_ascii=False, default=str)

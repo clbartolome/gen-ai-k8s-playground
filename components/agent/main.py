@@ -5,7 +5,7 @@ import uuid
 
 from flask import Flask, jsonify, request
 
-from aap_mcp import AapMcpClient
+from aap_mcp import AapMcpClient, set_aap_thread_context
 from config import load_settings
 from itsm_mcp import ItsmMcpClient
 from llm import LLMClient
@@ -60,6 +60,29 @@ def _incident_trace_label(incident: dict | None, fallback_message: str) -> str:
 
 
 def _process_run(
+    run_id: str,
+    thread_id: str,
+    user_message: str,
+    *,
+    forced_category: str | None = None,
+    source: str | None = None,
+    incident: dict | None = None,
+) -> None:
+    set_aap_thread_context(thread_id)
+    try:
+        _execute_run(
+            run_id,
+            thread_id,
+            user_message,
+            forced_category=forced_category,
+            source=source,
+            incident=incident,
+        )
+    finally:
+        set_aap_thread_context(None)
+
+
+def _execute_run(
     run_id: str,
     thread_id: str,
     user_message: str,
