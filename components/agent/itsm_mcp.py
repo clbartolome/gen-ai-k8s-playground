@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
 from typing import Any
@@ -13,6 +14,116 @@ from http_util import ssl_context_for
 from logutil import mask_secret
 
 log = logging.getLogger("agent.itsm_mcp")
+
+_CREATE_REQUEST_TOP_LEVEL = frozenset(
+    {
+        "name",
+        "Name",
+        "description",
+        "Description",
+        "request_template_id",
+        "requestTemplateId",
+        "specifications_json",
+        "specificationsJson",
+        "specifications",
+    }
+)
+_TEMPLATE_IN_STEP_RE = re.compile(
+    r"\*{0,2}([A-Za-z0-9][A-Za-z0-9._-]+)\*{0,2}\s+ITSM\s+template",
+    re.IGNORECASE,
+)
+_TEMPLATE_AFTER_LABEL_RE = re.compile(
+    r"ITSM\s+template\s+\*{0,2}([A-Za-z0-9][A-Za-z0-9._-]+)",
+    re.IGNORECASE,
+)
+
+
+def prepare_create_request_arguments(
+    arguments: dict[str, Any] | None,
+    *,
+    step_detail: str | None = None,
+) -> dict[str, Any]:
+    """Move procedure fields into specifications_json and fill required name."""
+    args = dict(arguments or {})
+    specs = _as_object(
+        args.pop("specifications_json", None)
+        or args.pop("specificationsJson", None)
+        or args.pop("specifications", None)
+    )
+    name = _first_text(args.pop("name", None), args.pop("Name", None))
+    description = _first_text(
+        args.pop("description", None),
+        args.pop("Description", None),
+    )
+    template_id = _first_text(
+        args.pop("request_template_id", None),
+        args.pop("requestTemplateId", None),
+    )
+    for key, value in args.items():
+        if key in _CREATE_REQUEST_TOP_LEVEL or value is None:
+            continue
+        specs.setdefault(str(key), value)
+    specs = {
+        str(key): _stringify(value)
+        for key, value in specs.items()
+        if value is not None and str(key).strip()
+    }
+    if not template_id:
+        template_id = _template_id_from_step(step_detail)
+    if not name:
+        vm_name = specs.get("vm_name") or specs.get("vm")
+        name = f"Deploy application on {vm_name}" if vm_name else "Service request"
+    if not description:
+        description = name
+    prepared: dict[str, Any] = {
+        "name": name,
+        "description": description,
+    }
+    if template_id:
+        prepared["request_template_id"] = template_id
+    if specs:
+        prepared["specifications_json"] = specs
+    return prepared
+
+
+def _as_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _stringify(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _template_id_from_step(step_detail: str | None) -> str:
+    if not step_detail:
+        return ""
+    match = _TEMPLATE_IN_STEP_RE.search(step_detail) or _TEMPLATE_AFTER_LABEL_RE.search(
+        step_detail
+    )
+    return match.group(1) if match else ""
 
 
 class ItsmMcpClient:
@@ -195,10 +306,19 @@ class ItsmMcpClient:
         return tools
 
     def call_tool(self, name: str, arguments: dict | None = None) -> Any:
-        log.info("MCP tools/call name=%s arguments=%s", name, arguments or {})
+        prepared = dict(arguments or {})
+        if name == "create_request":
+            prepared = prepare_create_request_arguments(prepared)
+            if prepared != (arguments or {}):
+                log.info(
+                    "MCP tools/call name=%s reshaped arguments=%s",
+                    name,
+                    prepared,
+                )
+        log.info("MCP tools/call name=%s arguments=%s", name, prepared)
         result = self._rpc(
             "tools/call",
-            {"name": name, "arguments": arguments or {}},
+            {"name": name, "arguments": prepared},
         )
         normalized = self._normalize_tool_result(result)
         preview = json.dumps(normalized, ensure_ascii=False, default=str)

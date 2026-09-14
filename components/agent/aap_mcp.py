@@ -6,6 +6,7 @@ import contextvars
 import copy
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
 from typing import Any
@@ -22,8 +23,20 @@ LAUNCH_TOOLS_WITH_EXTRA_VARS = frozenset(
         "job_templates_launch_create",
     }
 )
+LIST_TEMPLATE_TOOLS = frozenset(
+    {
+        "workflow_job_templates_list",
+        "job_templates_list",
+    }
+)
 
 _REQUEST_BODY_KEYS = ("request_body", "requestBody")
+_TEMPLATE_ID_KEYS = (
+    "template_id",
+    "workflow_job_template_id",
+    "workflow_template_id",
+    "job_template_id",
+)
 
 _thread_id_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "aap_thread_id",
@@ -42,28 +55,132 @@ def inject_thread_id_into_arguments(
     tool_name: str,
     thread_id: str | None,
 ) -> dict[str, Any]:
-    """Merge thread_id into extra_vars without removing existing values."""
-    if not thread_id:
-        return dict(arguments or {})
-
+    """Fold launch extra_vars, stringify them, and merge thread_id."""
     args = copy.deepcopy(arguments or {})
+    if tool_name in LAUNCH_TOOLS_WITH_EXTRA_VARS:
+        args = _fold_launch_extra_vars(args)
 
     located = _find_request_body(args)
     if located is not None:
         _, body = located
-        body["extra_vars"] = _merge_thread_id(body.get("extra_vars"), thread_id)
+        body["extra_vars"] = _prepare_extra_vars(body.get("extra_vars"), thread_id)
         return args
 
     if "extra_vars" in args:
-        args["extra_vars"] = _merge_thread_id(args.get("extra_vars"), thread_id)
+        args["extra_vars"] = _prepare_extra_vars(args.get("extra_vars"), thread_id)
         return args
 
-    if tool_name in LAUNCH_TOOLS_WITH_EXTRA_VARS:
+    if thread_id and tool_name in LAUNCH_TOOLS_WITH_EXTRA_VARS:
         args["request_body"] = {
-            "extra_vars": _merge_thread_id(None, thread_id),
+            "extra_vars": _prepare_extra_vars(None, thread_id),
         }
 
     return args
+
+
+def apply_launch_template_id(
+    arguments: dict[str, Any] | None,
+    *,
+    derived: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Set launch `id` from the list step when the article does not include it."""
+    args = copy.deepcopy(arguments or {})
+    source = derived if isinstance(derived, dict) else {}
+    for key in _TEMPLATE_ID_KEYS:
+        value = source.get(key)
+        if value is None or str(value).strip() == "":
+            continue
+        args["id"] = str(value).strip()
+        return args
+    current = _launch_id(args)
+    if current:
+        return args
+    for key in ("id", "pk"):
+        value = args.get(key)
+        if value is not None and not _looks_like_template_id(str(value).strip()):
+            args.pop(key, None)
+    return args
+
+
+def launch_template_id(arguments: dict[str, Any] | None) -> str:
+    return _launch_id(dict(arguments or {}))
+
+
+def extract_template_id(result: Any, template_name: str | None = None) -> str:
+    """Pick a template id from a list/search result, matching name when given."""
+    wanted = (template_name or "").strip().casefold()
+    matches: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            node_name = str(node.get("name") or node.get("title") or "").strip()
+            node_id = node.get("id") if node.get("id") is not None else node.get("pk")
+            if node_id is not None and node_name:
+                if not wanted or node_name.casefold() == wanted:
+                    matches.append(str(node_id).strip())
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(result)
+    return matches[0] if matches else ""
+
+
+def quoted_name_from_step(step_detail: str | None) -> str:
+    if not step_detail:
+        return ""
+    match = re.search(r'"([^"]+)"|“([^”]+)”', step_detail)
+    if not match:
+        return ""
+    return (match.group(1) or match.group(2) or "").strip()
+
+
+def _fold_launch_extra_vars(args: dict[str, Any]) -> dict[str, Any]:
+    extra: dict[str, Any] = {}
+    if "extra_vars" in args:
+        extra.update(_stringify_extra_vars(args.pop("extra_vars")))
+    located = _find_request_body(args)
+    body_key = "request_body"
+    body: dict[str, Any] = {}
+    if located is not None:
+        body_key, found = located
+        extra.update(_stringify_extra_vars(found.get("extra_vars")))
+        body = {key: value for key, value in found.items() if key != "extra_vars"}
+    kept: dict[str, Any] = {}
+    for key, value in args.items():
+        if key in _REQUEST_BODY_KEYS:
+            continue
+        if key in {"id", "pk"}:
+            kept[key] = value
+            continue
+        if value is None:
+            continue
+        extra.setdefault(str(key), value)
+    body["extra_vars"] = extra
+    kept[body_key] = body
+    return kept
+
+
+def _launch_id(args: dict[str, Any]) -> str:
+    for key in ("id", "pk"):
+        value = args.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and _looks_like_template_id(text):
+            return text
+    return ""
+
+
+def _looks_like_template_id(value: str) -> bool:
+    if value.isdigit():
+        return True
+    lowered = value.casefold()
+    if " " in value or "deploy" in lowered or "template" in lowered:
+        return False
+    return True
 
 
 def _find_request_body(args: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
@@ -74,10 +191,22 @@ def _find_request_body(args: dict[str, Any]) -> tuple[str, dict[str, Any]] | Non
     return None
 
 
-def _merge_thread_id(extra_vars: Any, thread_id: str) -> dict[str, Any]:
-    merged = copy.deepcopy(extra_vars) if isinstance(extra_vars, dict) else {}
-    merged.setdefault("thread_id", thread_id)
+def _prepare_extra_vars(extra_vars: Any, thread_id: str | None) -> dict[str, str]:
+    merged = _stringify_extra_vars(extra_vars)
+    if thread_id:
+        merged.setdefault("thread_id", thread_id)
     return merged
+
+
+def _stringify_extra_vars(extra_vars: Any) -> dict[str, str]:
+    source = extra_vars if isinstance(extra_vars, dict) else {}
+    out: dict[str, str] = {}
+    for key, value in source.items():
+        name = str(key)
+        if not name or value is None:
+            continue
+        out[name] = value if isinstance(value, str) else str(value)
+    return out
 
 
 class AapMcpClient:

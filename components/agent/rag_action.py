@@ -18,9 +18,17 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from aap_mcp import AapMcpClient
+from aap_mcp import (
+    AapMcpClient,
+    LAUNCH_TOOLS_WITH_EXTRA_VARS,
+    LIST_TEMPLATE_TOOLS,
+    apply_launch_template_id,
+    extract_template_id,
+    launch_template_id,
+    quoted_name_from_step,
+)
 from config import RAG_MCP_TOOLS
-from itsm_mcp import ItsmMcpClient
+from itsm_mcp import ItsmMcpClient, prepare_create_request_arguments
 from llm import LLMClient
 from openshift_mcp import OpenShiftMcpClient
 from prompts import (
@@ -33,6 +41,7 @@ from prompts import (
     build_rag_action_fill_prompt,
     build_rag_action_merge_prompt,
     build_rag_action_step_domain_prompt,
+    build_rag_action_step_execute_prompt,
     build_rag_action_summary_prompt,
     build_rag_not_found_prompt,
     build_rag_procedure_confirm_prompt,
@@ -60,6 +69,7 @@ _CONFIRM_RE = re.compile(
 _VALID_DOMAINS = frozenset({"OPENSHIFT", "AAP", "ITSM", "NONE"})
 _PHASE_AWAITING_CONFIRMATION = "awaiting_execution_confirmation"
 _PHASE_COLLECTING_PARAMETERS = "collecting_parameters"
+_NON_TOOL_ACTIONS = frozenset({"", "skip", "reply", "unsupported", "out_of_scope"})
 
 
 @dataclass(frozen=True)
@@ -556,7 +566,7 @@ def _execute_procedure(
 
         parallel_group = domain if domain in {"OPENSHIFT", "AAP", "ITSM"} else None
 
-        if action in {"", "skip", "reply", "unsupported", "out_of_scope"}:
+        if domain == "NONE":
             accumulated["steps_log"].append(
                 {
                     "step": step_num,
@@ -582,6 +592,26 @@ def _execute_procedure(
                     parallel_group=parallel_group,
                 )
             continue
+
+        if action in _NON_TOOL_ACTIONS:
+            failure = (
+                f"Could not execute step {step_num}. "
+                "The procedure was stopped so this step is not skipped."
+            )
+            return _abort_procedure(
+                user_message,
+                llm=llm,
+                dialogue=dialogue,
+                step=step,
+                failure=failure,
+                accumulated=accumulated,
+                step_num=step_num,
+                detail=detail,
+                tool=None,
+                on_thought=on_thought,
+                trace=trace,
+                domain=domain,
+            )
 
         if action == "request_information":
             message = arguments.get("message")
@@ -624,6 +654,35 @@ def _execute_procedure(
 
         if on_thought:
             on_thought(f"Calling tool “{action}”…")
+        if action == "create_request":
+            arguments = prepare_create_request_arguments(
+                arguments,
+                step_detail=detail,
+            )
+        if action in LAUNCH_TOOLS_WITH_EXTRA_VARS:
+            arguments = apply_launch_template_id(
+                arguments,
+                derived=accumulated.get("derived"),
+            )
+            if not launch_template_id(arguments):
+                failure = (
+                    f"Could not execute step {step_num}: the launch tool requires "
+                    "the template id from the search step, and none was available."
+                )
+                return _abort_procedure(
+                    user_message,
+                    llm=llm,
+                    dialogue=dialogue,
+                    step=step,
+                    failure=failure,
+                    accumulated=accumulated,
+                    step_num=step_num,
+                    detail=detail,
+                    tool=action,
+                    on_thought=on_thought,
+                    trace=trace,
+                    domain=domain,
+                )
         try:
             result = registry.invokers[action](action, arguments)
         except Exception as exc:
@@ -669,7 +728,16 @@ def _execute_procedure(
             result,
             llm=llm,
             existing=accumulated["derived"],
+            tool=action,
+            step=step,
         )
+        if action in LIST_TEMPLATE_TOOLS:
+            found_id = extract_template_id(
+                result,
+                quoted_name_from_step(detail),
+            )
+            if found_id:
+                derived.setdefault("template_id", found_id)
         accumulated["derived"] = derived
         result_summary = _format_result(result)[:500]
         accumulated["steps_log"].append(
@@ -678,6 +746,7 @@ def _execute_procedure(
                 "detail": detail,
                 "tool": action,
                 "ok": True,
+                "skipped": False,
                 "domain": domain,
                 "arguments": arguments,
                 "result_summary": result_summary,
@@ -823,9 +892,16 @@ def _decide_step(
             "domain": domain,
         }
 
+    allowed_tool_names = [
+        str(tool.get("name"))
+        for tool in bundle.tools
+        if isinstance(tool.get("name"), str) and tool.get("name")
+    ]
+    allowed = set(allowed_tool_names)
     payload = {
         "user_request": user_message,
         "current_step": step,
+        "allowed_tool_names": allowed_tool_names,
         "accumulated_state": {
             "parameters": accumulated.get("parameters") or [],
             "derived": accumulated.get("derived") or {},
@@ -834,36 +910,95 @@ def _decide_step(
                     "step": item.get("step"),
                     "tool": item.get("tool"),
                     "ok": item.get("ok"),
+                    "skipped": item.get("skipped"),
                     "result_summary": item.get("result_summary"),
                 }
                 for item in (accumulated.get("steps_log") or [])
             ],
         },
         "instruction": (
-            "Execute this procedure step now using exactly one available tool when "
-            "needed. Prefer values from accumulated_state. Do not invent identifiers. "
-            "If no tool is required, return action reply. If a required argument is "
-            "still missing from the state, return request_information."
+            "Execute current_step now. action must be an exact value from "
+            "allowed_tool_names (or request_information). Never invent a tool name "
+            "from the step title. Fill arguments using that tool's inputSchema. "
+            "Prefer values from accumulated_state. Do not invent identifiers. "
+            "Search/list steps must not launch. Launch steps must not only list."
         ),
     }
+    user_payload = json.dumps(payload, ensure_ascii=False, default=str)
     messages = [
         {"role": "system", "content": bundle.build_prompt(bundle.tools)},
-        {
-            "role": "user",
-            "content": json.dumps(payload, ensure_ascii=False, default=str),
-        },
+        {"role": "system", "content": build_rag_action_step_execute_prompt()},
+        {"role": "user", "content": user_payload},
     ]
-    raw = llm.chat(messages).strip()
-    data = _parse_json_object(raw)
-    if not data:
+    data, raw = _specialist_decision(llm, messages)
+    if not _is_usable_specialist_decision(data, allowed):
+        log.warning(
+            "RAG action specialist decision invalid domain=%s raw=%s",
+            domain,
+            (raw or "")[:500],
+        )
+        retry_messages = [
+            *messages,
+            {"role": "assistant", "content": raw or ""},
+            {
+                "role": "user",
+                "content": _specialist_retry_nudge(data, allowed_tool_names),
+            },
+        ]
+        data, raw = _specialist_decision(llm, retry_messages)
+    if not _is_usable_specialist_decision(data, allowed):
+        log.warning(
+            "RAG action specialist retry failed domain=%s raw=%s",
+            domain,
+            (raw or "")[:500],
+        )
         return {
-            "action": "skip",
+            "action": "unsupported",
             "arguments": {},
             "thought": "No decision from specialist.",
             "domain": domain,
         }
     data["domain"] = domain
     return data
+
+
+def _specialist_decision(
+    llm: LLMClient,
+    messages: list[dict[str, str]],
+) -> tuple[dict[str, Any], str]:
+    raw = llm.chat(messages).strip()
+    return _parse_json_object(raw), raw
+
+
+def _is_usable_specialist_decision(
+    data: dict[str, Any],
+    allowed_tools: set[str],
+) -> bool:
+    action = str(data.get("action") or "").strip()
+    if action == "request_information":
+        return True
+    return action in allowed_tools
+
+
+def _specialist_retry_nudge(
+    data: dict[str, Any],
+    allowed_tool_names: list[str],
+) -> str:
+    action = str(data.get("action") or "").strip()
+    names = ", ".join(allowed_tool_names) or "(none)"
+    invented = ""
+    if action and action not in allowed_tool_names and action != "request_information":
+        invented = (
+            f'"{action}" is not a catalog tool. Do not invent a name from the '
+            "step title. "
+        )
+    return (
+        f"{invented}"
+        "Return only the JSON object. action must be one of: "
+        f"{names}, or request_information. "
+        "Fill arguments using that tool's inputSchema. "
+        "Do not skip. Do not use action reply. Execute current_step."
+    )
 
 
 def _classify_step_domain(
@@ -897,6 +1032,26 @@ def _classify_step_domain(
         if name in upper:
             return name
     log.warning("RAG action step domain parse failed raw=%s", (raw or "")[:200])
+    return _domain_from_step_text(step)
+
+
+def _domain_from_step_text(step: dict[str, Any]) -> str:
+    detail = str(step.get("detail") or "").casefold()
+    if any(
+        token in detail
+        for token in ("ansible", "workflow job", "job template", "aap")
+    ):
+        return "AAP"
+    if any(
+        token in detail
+        for token in ("itsm", "service request", "incident", "change request")
+    ):
+        return "ITSM"
+    if any(
+        token in detail
+        for token in ("openshift", "kubernetes", "namespace", "kubectl")
+    ):
+        return "OPENSHIFT"
     return "NONE"
 
 
@@ -905,6 +1060,8 @@ def _merge_derived_from_result(
     *,
     llm: LLMClient,
     existing: dict[str, Any],
+    tool: str,
+    step: dict[str, Any],
 ) -> dict[str, Any]:
     merged = dict(existing) if isinstance(existing, dict) else {}
     observation = _format_result(result)
@@ -915,6 +1072,8 @@ def _merge_derived_from_result(
         {
             "role": "user",
             "content": (
+                f"Tool name:\n{tool}\n\n"
+                f"Current step:\n{json.dumps(step, ensure_ascii=False, default=str)}\n\n"
                 f"Existing derived state:\n"
                 f"{json.dumps(merged, ensure_ascii=False, default=str)}\n\n"
                 f"Tool result:\n{observation}"
@@ -1049,8 +1208,13 @@ def _explain_error(
 
 
 def _result_is_error(result: Any) -> bool:
+    if isinstance(result, str):
+        return _looks_like_http_error_page(result)
     if not isinstance(result, dict):
         return False
+    text = result.get("text")
+    if isinstance(text, str) and _looks_like_http_error_page(text):
+        return True
     if result.get("isError") is True or result.get("is_error") is True:
         return True
     if result.get("success") is False or result.get("ok") is False:
@@ -1073,9 +1237,26 @@ def _result_is_error(result: Any) -> bool:
     return False
 
 
+def _looks_like_http_error_page(text: str) -> bool:
+    lowered = text.lstrip().casefold()
+    if lowered.startswith("<!doctype") or lowered.startswith("<html"):
+        return True
+    return "<title>not found</title>" in lowered
+
+
 def _format_result(result: Any) -> str:
     if isinstance(result, str):
+        if _looks_like_http_error_page(result):
+            if "not found" in result.casefold():
+                return (
+                    "The automation service could not find the workflow or job "
+                    "template (missing or invalid id)."
+                )
+            return "The automation service returned an unexpected HTML error page."
         return result
+    text = result.get("text") if isinstance(result, dict) else None
+    if isinstance(text, str) and _looks_like_http_error_page(text):
+        return _format_result(text)
     try:
         return json.dumps(result, ensure_ascii=False, indent=2, default=str)
     except TypeError:
@@ -1122,8 +1303,8 @@ def _ask_for_missing(
         {
             "role": "user",
             "content": (
-                f"User request:\n{user_message}\n\n"
-                f"Missing parameters:\n{missing_json}"
+                f"Missing parameters:\n{missing_json}\n\n"
+                f"Latest user message:\n{user_message}"
             ),
         }
     )
@@ -1258,9 +1439,10 @@ def _decline_execution(
             "role": "system",
             "content": (
                 "The user declined executing the procedure you described. "
-                "Reply briefly and politely in the same language as the user. "
-                "Confirm that you will not run anything and acknowledge their choice. "
-                "Offer to help if they need anything else. No JSON."
+                "You are the assistant in this chat. Output only the reply they "
+                "will see: brief, conversational, same language as the user. "
+                "Confirm that you will not run anything. Do not draft or describe "
+                "your message. Do not write like an email. No JSON."
             ),
         },
     ]
@@ -1280,9 +1462,11 @@ def _unclear_execution_reply(
             "role": "system",
             "content": (
                 "You asked whether the user wants you to execute a procedure. "
-                "Their reply was unclear. Ask again, clearly and politely, whether "
-                "they want you to execute it on their behalf. Reply in the same "
-                "language as the user. No JSON."
+                "Their reply was unclear. You are the assistant in this chat. "
+                "Output only the reply they will see: ask again, briefly, whether "
+                "they want you to execute it on their behalf. Same language as "
+                "the user. Do not draft or describe your message. Do not write "
+                "like an email. No JSON."
             ),
         },
     ]
