@@ -477,7 +477,9 @@ def build_aap_prompt(tools: list[dict[str, Any]]) -> str:
         domain_rules=(
             "Help with AAP jobs, templates, workflows, and related operations using only "
             "the tools below. Use workflow_* tools only when the user mentions workflows. "
-            "Never invent template or job identifiers. Never answer live AAP state from memory."
+            "Never invent template or job identifiers. Never answer live AAP state from memory. "
+            "You may pass a job template or workflow template name in the id field; the runtime "
+            "resolves names to numeric ids before launch. "
             "When launching a workflow job template, put the parameters in 'request_body.extra_vars'  key. Example: {'id': '123456', 'request_body': {'extra_vars': {'param1': 'value1', 'param2': 'value2'}}}."
             "When launching a workflow job template if itsm_change_ref or itsm_service_request_ref is mentioned, put both in extra_vars."
             "When launching a workflow job template if the value of an extra_var is a number, put it as an Integer in extra_vars."
