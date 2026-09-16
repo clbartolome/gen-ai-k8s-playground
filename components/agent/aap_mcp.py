@@ -97,7 +97,7 @@ def inject_thread_id_into_arguments(
         return args
 
     if tool_name in LAUNCH_TOOLS_WITH_EXTRA_VARS:
-        args["request_body"] = {
+        args["requestBody"] = {
             "extra_vars": _merge_thread_id(None, thread_id),
         }
 
@@ -136,9 +136,39 @@ def normalize_extra_var_value(value: Any) -> Any:
     return value
 
 
-def normalize_launch_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-    """Normalize extra_vars in launch tool arguments before calling AAP."""
+def canonicalize_request_body_key(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Use the requestBody key expected by the AAP MCP launch tools."""
     args = copy.deepcopy(arguments)
+    snake = args.get("request_body")
+    camel = args.get("requestBody")
+    if isinstance(snake, dict) and isinstance(camel, dict):
+        merged = copy.deepcopy(camel)
+        snake_copy = copy.deepcopy(snake)
+        snake_extra = snake_copy.pop("extra_vars", None)
+        camel_extra = merged.get("extra_vars")
+        if isinstance(snake_extra, dict):
+            combined = (
+                copy.deepcopy(camel_extra)
+                if isinstance(camel_extra, dict)
+                else {}
+            )
+            for key, value in snake_extra.items():
+                combined.setdefault(key, value)
+            merged["extra_vars"] = combined
+        for key, value in snake_copy.items():
+            merged.setdefault(key, value)
+        args["requestBody"] = merged
+        del args["request_body"]
+        return args
+    if isinstance(snake, dict):
+        args["requestBody"] = copy.deepcopy(snake)
+        del args["request_body"]
+    return args
+
+
+def normalize_launch_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Normalize launch tool arguments before calling AAP."""
+    args = canonicalize_request_body_key(arguments)
     located = _find_request_body(args)
     if located is not None:
         _, body = located

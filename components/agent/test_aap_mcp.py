@@ -6,6 +6,7 @@ from aap_mcp import (
     AapMcpClient,
     TemplateAmbiguousError,
     TemplateNotFoundError,
+    canonicalize_request_body_key,
     extract_template_list,
     extract_template_reference,
     find_templates_by_name,
@@ -88,7 +89,7 @@ class InjectThreadIdTests(unittest.TestCase):
             result,
             {
                 "id": "99",
-                "request_body": {"extra_vars": {"thread_id": "thread-abc"}},
+                "requestBody": {"extra_vars": {"thread_id": "thread-abc"}},
             },
         )
 
@@ -226,7 +227,7 @@ class ExtraVarsNormalizationTests(unittest.TestCase):
     def test_normalize_launch_arguments_in_request_body(self) -> None:
         args = {
             "id": "141",
-            "requestBody": {
+            "request_body": {
                 "extra_vars": {
                     "vm_name": "qr-01",
                     "cpus": 1,
@@ -235,8 +236,20 @@ class ExtraVarsNormalizationTests(unittest.TestCase):
             },
         }
         result = normalize_launch_arguments(args)
+        self.assertIn("requestBody", result)
+        self.assertNotIn("request_body", result)
         self.assertEqual(result["requestBody"]["extra_vars"]["cpus"], "1")
         self.assertEqual(result["requestBody"]["extra_vars"]["mem"], "1")
+
+    def test_canonicalize_request_body_key_merges_both_forms(self) -> None:
+        args = {
+            "request_body": {"extra_vars": {"vm_name": "qr-01"}},
+            "requestBody": {"extra_vars": {"cpus": "1"}},
+        }
+        result = canonicalize_request_body_key(args)
+        self.assertNotIn("request_body", result)
+        self.assertEqual(result["requestBody"]["extra_vars"]["vm_name"], "qr-01")
+        self.assertEqual(result["requestBody"]["extra_vars"]["cpus"], "1")
 
     def test_normalize_launch_arguments_top_level(self) -> None:
         args = {"id": "99", "extra_vars": {"count": 2, "name": "demo"}}
@@ -299,6 +312,8 @@ class AapMcpClientResolverTests(unittest.TestCase):
         params = launch_call.args[1]
         self.assertEqual(params["name"], "job_templates_launch_create")
         self.assertEqual(params["arguments"]["id"], "10")
+        self.assertIn("requestBody", params["arguments"])
+        self.assertNotIn("request_body", params["arguments"])
 
     @patch.object(AapMcpClient, "_rpc")
     @patch.object(AapMcpClient, "_ensure_session")
@@ -337,7 +352,7 @@ class AapMcpClientResolverTests(unittest.TestCase):
         )
 
         params = rpc_mock.call_args.args[1]
-        extra_vars = params["arguments"]["request_body"]["extra_vars"]
+        extra_vars = params["arguments"]["requestBody"]["extra_vars"]
         self.assertEqual(extra_vars["cpus"], "1")
         self.assertEqual(extra_vars["mem"], "1")
 
