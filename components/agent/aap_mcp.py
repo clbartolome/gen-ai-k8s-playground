@@ -8,7 +8,7 @@ import json
 import logging
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 from config import Settings
 from http_util import ssl_context_for
@@ -23,7 +23,45 @@ LAUNCH_TOOLS_WITH_EXTRA_VARS = frozenset(
     }
 )
 
+LAUNCH_TO_LIST_TOOL = {
+    "job_templates_launch_create": "job_templates_list",
+    "workflow_job_templates_launch_create": "workflow_job_templates_list",
+}
+
+_TEMPLATE_NAME_KEYS = (
+    "name",
+    "job_template_name",
+    "template_name",
+    "workflow_job_template_name",
+    "job_template",
+    "workflow_job_template",
+)
+
 _REQUEST_BODY_KEYS = ("request_body", "requestBody")
+
+
+class TemplateResolveError(RuntimeError):
+    """Failed to map a template name to an AAP id."""
+
+
+class TemplateNotFoundError(TemplateResolveError):
+    """No template matched the provided name."""
+
+
+class TemplateAmbiguousError(TemplateResolveError):
+    """Multiple templates matched the provided name."""
+
+    def __init__(self, name: str, matches: list[dict[str, Any]]) -> None:
+        self.name = name
+        self.matches = matches
+        options = ", ".join(
+            f"{item.get('name')} (id={item.get('id')})"
+            for item in matches[:5]
+        )
+        super().__init__(
+            f"Multiple job templates match {name!r}: {options}. "
+            "Please specify the exact template name or provide the numeric id."
+        )
 
 _thread_id_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "aap_thread_id",
@@ -59,7 +97,7 @@ def inject_thread_id_into_arguments(
         return args
 
     if tool_name in LAUNCH_TOOLS_WITH_EXTRA_VARS:
-        args["request_body"] = {
+        args["requestBody"] = {
             "extra_vars": _merge_thread_id(None, thread_id),
         }
 
@@ -80,6 +118,196 @@ def _merge_thread_id(extra_vars: Any, thread_id: str) -> dict[str, Any]:
     return merged
 
 
+def normalize_extra_var_value(value: Any) -> Any:
+    """Coerce numeric extra_vars to strings for AAP survey/job template launches."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(value)
+    if isinstance(value, dict):
+        return {
+            str(key): normalize_extra_var_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [normalize_extra_var_value(item) for item in value]
+    return value
+
+
+def canonicalize_request_body_key(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Use the requestBody key expected by the AAP MCP launch tools."""
+    args = copy.deepcopy(arguments)
+    snake = args.get("request_body")
+    camel = args.get("requestBody")
+    if isinstance(snake, dict) and isinstance(camel, dict):
+        merged = copy.deepcopy(camel)
+        snake_copy = copy.deepcopy(snake)
+        snake_extra = snake_copy.pop("extra_vars", None)
+        camel_extra = merged.get("extra_vars")
+        if isinstance(snake_extra, dict):
+            combined = (
+                copy.deepcopy(camel_extra)
+                if isinstance(camel_extra, dict)
+                else {}
+            )
+            for key, value in snake_extra.items():
+                combined.setdefault(key, value)
+            merged["extra_vars"] = combined
+        for key, value in snake_copy.items():
+            merged.setdefault(key, value)
+        args["requestBody"] = merged
+        del args["request_body"]
+        return args
+    if isinstance(snake, dict):
+        args["requestBody"] = copy.deepcopy(snake)
+        del args["request_body"]
+    return args
+
+
+def normalize_launch_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Normalize launch tool arguments before calling AAP."""
+    args = canonicalize_request_body_key(arguments)
+    located = _find_request_body(args)
+    if located is not None:
+        _, body = located
+        if "extra_vars" in body:
+            body["extra_vars"] = normalize_extra_var_value(body.get("extra_vars"))
+        return args
+    if "extra_vars" in args:
+        args["extra_vars"] = normalize_extra_var_value(args.get("extra_vars"))
+    return args
+
+
+def is_numeric_template_id(value: Any) -> bool:
+    """Return True when value is a positive integer id (not a template name)."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return value > 0
+    if isinstance(value, str):
+        stripped = value.strip()
+        return bool(stripped) and stripped.isdigit()
+    return False
+
+
+def normalize_template_name(name: str) -> str:
+    return " ".join(name.strip().lower().split())
+
+
+def extract_template_list(result: Any) -> list[dict[str, Any]]:
+    """Parse job/workflow template list payloads from MCP tool results."""
+    payload = result
+    if isinstance(result, str):
+        try:
+            payload = json.loads(result)
+        except json.JSONDecodeError:
+            return []
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("results", "items", "data"):
+            items = payload.get(key)
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+    return []
+
+
+def find_templates_by_name(
+    items: list[dict[str, Any]],
+    name: str,
+) -> list[dict[str, Any]]:
+    """Match templates by exact name; fall back to a unique partial match."""
+    target = normalize_template_name(name)
+    if not target:
+        return []
+
+    exact = [
+        item
+        for item in items
+        if normalize_template_name(str(item.get("name") or "")) == target
+    ]
+    if exact:
+        return exact
+
+    partial = [
+        item
+        for item in items
+        if target in normalize_template_name(str(item.get("name") or ""))
+    ]
+    if partial:
+        return partial
+    return []
+
+
+def resolve_template_id_from_items(
+    items: list[dict[str, Any]],
+    name: str,
+) -> int:
+    matches = find_templates_by_name(items, name)
+    if not matches:
+        raise TemplateNotFoundError(
+            f"No job template found with name {name!r}. "
+            "Check the template name in Ansible Automation Platform."
+        )
+    if len(matches) > 1:
+        raise TemplateAmbiguousError(name, matches)
+    template_id = matches[0].get("id")
+    if template_id is None:
+        raise TemplateNotFoundError(
+            f"Template {name!r} was matched but has no id in AAP."
+        )
+    return int(template_id)
+
+
+def extract_template_reference(args: dict[str, Any]) -> tuple[str, str] | None:
+    """Return (field_name, value) for the template id or name in launch args."""
+    id_val = args.get("id")
+    if id_val is not None and str(id_val).strip():
+        return "id", str(id_val).strip()
+    for key in _TEMPLATE_NAME_KEYS:
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            return key, val.strip()
+    return None
+
+
+def resolve_launch_template_arguments(
+    arguments: dict[str, Any],
+    *,
+    tool_name: str,
+    list_items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Replace a template name with its numeric id before launch."""
+    if tool_name not in LAUNCH_TO_LIST_TOOL:
+        return arguments
+
+    ref = extract_template_reference(arguments)
+    if ref is None:
+        return arguments
+
+    field, value = ref
+    if is_numeric_template_id(value):
+        resolved = copy.deepcopy(arguments)
+        if field == "id":
+            resolved["id"] = str(int(str(value).strip()))
+        return resolved
+
+    resolved_id = resolve_template_id_from_items(list_items, value)
+    resolved = copy.deepcopy(arguments)
+    resolved["id"] = str(resolved_id)
+    if field != "id":
+        resolved.pop(field, None)
+    log.info(
+        "AAP resolved template name=%s id=%s tool=%s",
+        value,
+        resolved_id,
+        tool_name,
+    )
+    return resolved
+
+
 class AapMcpClient:
     """Talks JSON-RPC to the AAP MCP server (Streamable HTTP)."""
 
@@ -94,6 +322,7 @@ class AapMcpClient:
         self._request_id = 0
         self._session_id: str | None = None
         self._initialized = False
+        self._template_list_cache: dict[str, list[dict[str, Any]]] = {}
         log.info(
             "AapMcpClient ready url=%s timeout=%ss token=%s allowlist=%s",
             self._url,
@@ -259,6 +488,52 @@ class AapMcpClient:
             )
         return tools
 
+    def _load_template_list(self, list_tool: str) -> list[dict[str, Any]]:
+        cached = self._template_list_cache.get(list_tool)
+        if cached is not None:
+            return cached
+        if list_tool not in self._allowlist:
+            raise TemplateNotFoundError(
+                f"Cannot resolve template name: list tool {list_tool!r} is not enabled."
+            )
+        log.info("AAP MCP loading template list tool=%s", list_tool)
+        result = self._rpc("tools/call", {"name": list_tool, "arguments": {}})
+        items = extract_template_list(self._normalize_tool_result(result))
+        self._template_list_cache[list_tool] = items
+        log.info(
+            "AAP MCP cached template list tool=%s count=%s",
+            list_tool,
+            len(items),
+        )
+        return items
+
+    def _resolve_launch_template_id(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        list_loader: Callable[[str], list[dict[str, Any]]] | None = None,
+    ) -> dict[str, Any]:
+        list_tool = LAUNCH_TO_LIST_TOOL.get(tool_name)
+        if not list_tool:
+            return arguments
+
+        ref = extract_template_reference(arguments)
+        if ref is None:
+            return arguments
+
+        _, value = ref
+        if is_numeric_template_id(value):
+            return arguments
+
+        loader = list_loader or self._load_template_list
+        items = loader(list_tool)
+        return resolve_launch_template_arguments(
+            arguments,
+            tool_name=tool_name,
+            list_items=items,
+        )
+
     def call_tool(self, name: str, arguments: dict | None = None) -> Any:
         """Call a tool on the AAP MCP server (tools/call)."""
         thread_id = _thread_id_ctx.get()
@@ -273,6 +548,9 @@ class AapMcpClient:
                 name,
                 thread_id,
             )
+        if name in LAUNCH_TOOLS_WITH_EXTRA_VARS:
+            prepared = self._resolve_launch_template_id(name, prepared)
+            prepared = normalize_launch_arguments(prepared)
         log.info("AAP MCP tools/call name=%s arguments=%s", name, prepared)
         result = self._rpc(
             "tools/call",

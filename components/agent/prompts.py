@@ -164,8 +164,8 @@ Return exactly one JSON object and nothing else (no Markdown fences, no commenta
 }
 
 # Rules
-- known_parameters: only values explicitly present in the user request (or prior turns if provided). Preserve user values exactly.
-- missing_parameters: only Required information items not already recovered. If none are missing, use [].
+- known_parameters: only values explicitly present in the user request (or prior turns if provided). For `name`, use the machine field names documented in the Procedure section (for example when a launch step lists `vm_name: Virtual Machine name`, use `vm_name`), not the human labels from Required information.
+- missing_parameters: only Required information items not already recovered. Put the human label or clarifying text from Required information in `detail`. For `name`, use the machine field name from the Procedure section when the article documents it.
 - procedure / follow_up: use only article content. If a section is missing, use [].
 - Use the same language as the user (or the article if unclear) for name/detail/follow_up text.
 - Never invent facts. Never mention tools, MCP, APIs, or retrieval.
@@ -203,6 +203,7 @@ Return exactly one JSON object and nothing else (no Markdown fences, no commenta
 # Rules
 - Include a parameter only when the user clearly provided its value.
 - Use the exact name from the missing list.
+- For numeric operational fields (cpus, mem, memory), store the numeric amount only when the article detail mentions GiB/integer/number of CPUs.
 - If nothing was provided, return {"provided": []}.
 """
 
@@ -477,8 +478,18 @@ def build_aap_prompt(tools: list[dict[str, Any]]) -> str:
         domain_rules=(
             "Help with AAP jobs, templates, workflows, and related operations using only "
             "the tools below. Use workflow_* tools only when the user mentions workflows. "
-            "Never invent template or job identifiers. Never answer live AAP state from memory."
-            "When launching a workflow job template, put the parameters in 'request_body.extra_vars'  key. Example: {'id': '123456', 'request_body': {'extra_vars': {'param1': 'value1', 'param2': 'value2'}}}."
+            "Never invent template or job identifiers. Never answer live AAP state from memory. "
+            "You may pass a job template or workflow template name in the id field; the runtime "
+            "resolves names to numeric ids before launch. "
+            "For workflow launches, use the machine extra_var keys documented in the "
+            "procedure/article (for example keys listed as `field_name: Human label` in a "
+            "launch step). Do not use human-readable labels as extra_var keys. "
+            "Use the workflow or job template name from the procedure in the id field, "
+            "or the numeric id when the article provides it. Never copy placeholder ids "
+            "from examples. "
+            "When launching a workflow job template, put the parameters in "
+            "'requestBody.extra_vars'. Example: {'id': 'Deploy Generic Application Stack', "
+            "'requestBody': {'extra_vars': {'param1': 'value1', 'param2': 'value2'}}}. "
             "When launching a workflow job template if itsm_change_ref or itsm_service_request_ref is mentioned, put both in extra_vars."
             "When launching a workflow job template if the value of an extra_var is a number, put it as an Integer in extra_vars."
         ),

@@ -18,25 +18,39 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from aap_mcp import AapMcpClient
+from aap_mcp import AapMcpClient, LAUNCH_TOOLS_WITH_EXTRA_VARS
 from config import RAG_MCP_TOOLS
 from itsm_mcp import ItsmMcpClient
 from llm import LLMClient
 from openshift_mcp import OpenShiftMcpClient
+from parameter_coercion import (
+    build_parameter_specs,
+    coerce_known_parameters,
+    known_parameters_as_map,
+)
 from prompts import (
     build_aap_prompt,
     build_itsm_prompt,
     build_openshift_prompt,
     build_rag_action_ask_prompt,
-    build_rag_action_error_prompt,
     build_rag_action_extract_prompt,
     build_rag_action_fill_prompt,
-    build_rag_action_merge_prompt,
     build_rag_action_step_domain_prompt,
-    build_rag_action_summary_prompt,
     build_rag_not_found_prompt,
     build_rag_procedure_confirm_prompt,
     build_rag_procedure_describe_prompt,
+)
+from step_outputs import (
+    extract_derived_from_tool_result,
+    format_launch_failure,
+    inject_trusted_derived_into_launch_args,
+    launch_result_is_failure,
+    merge_derived,
+    recover_aap_launch_decision,
+    render_procedure_error,
+    render_procedure_summary,
+    should_skip_duplicate_launch,
+    validate_launch_references,
 )
 from trace import TraceBuilder, clip_label
 
@@ -239,6 +253,7 @@ def _continue_collection(
     missing = _normalize_missing(pending.get("missing_parameters"), known)
     procedure = _normalize_procedure(pending.get("procedure"))
     follow_up = _normalize_follow_up(pending.get("follow_up"))
+    parameter_specs = _normalize_parameter_specs(pending.get("parameter_specs"))
 
     if missing:
         if on_thought:
@@ -250,6 +265,7 @@ def _continue_collection(
             dialogue=dialogue,
         )
         known = _merge_known(known, provided)
+        known = coerce_known_parameters(known, parameter_specs)
         missing = _normalize_missing(missing, known)
 
     if trace and procedure:
@@ -272,6 +288,7 @@ def _continue_collection(
         missing=missing,
         procedure=procedure,
         follow_up=follow_up,
+        parameter_specs=parameter_specs,
         registry=registry,
         on_thought=on_thought,
         trace=trace,
@@ -333,7 +350,7 @@ def _handle_execution_confirmation(
             action="reply",
         )
 
-    known, missing, procedure, follow_up = _prepare_procedure_after_accept(
+    known, missing, procedure, follow_up, parameter_specs = _prepare_procedure_after_accept(
         pending,
         llm=llm,
         dialogue=dialogue,
@@ -347,6 +364,7 @@ def _handle_execution_confirmation(
         dialogue=dialogue,
     )
     known = _merge_known(known, provided)
+    known = coerce_known_parameters(known, parameter_specs)
     missing = _normalize_missing(missing, known)
 
     return _next_result(
@@ -357,6 +375,7 @@ def _handle_execution_confirmation(
         missing=missing,
         procedure=procedure,
         follow_up=follow_up,
+        parameter_specs=parameter_specs,
         registry=registry,
         on_thought=on_thought,
         trace=trace,
@@ -370,7 +389,13 @@ def _prepare_procedure_after_accept(
     dialogue: list[dict[str, Any]] | None,
     on_thought: ThoughtCallback | None,
     trace: TraceBuilder | None,
-) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, Any]], list[str]]:
+) -> tuple[
+    list[dict[str, str]],
+    list[dict[str, str]],
+    list[dict[str, Any]],
+    list[str],
+    list[dict[str, str]],
+]:
     article_text = str(pending.get("article_text") or "").strip()
     original_request = str(pending.get("original_request") or "").strip()
     if len(article_text) > _MAX_ARTICLE_CHARS:
@@ -391,6 +416,8 @@ def _prepare_procedure_after_accept(
     missing = _normalize_missing(extracted.get("missing_parameters"), known)
     procedure = _normalize_procedure(extracted.get("procedure"))
     follow_up = _normalize_follow_up(extracted.get("follow_up"))
+    parameter_specs = build_parameter_specs(missing, known)
+    known = coerce_known_parameters(known, parameter_specs)
 
     if trace:
         trace.add(
@@ -401,10 +428,11 @@ def _prepare_procedure_after_accept(
                 "steps": len(procedure),
                 "known_parameters": known,
                 "missing_parameters": missing,
+                "parameter_specs": parameter_specs,
                 "procedure": procedure,
             },
         )
-    return known, missing, procedure, follow_up
+    return known, missing, procedure, follow_up, parameter_specs
 
 
 def _next_result(
@@ -416,16 +444,19 @@ def _next_result(
     missing: list[dict[str, str]],
     procedure: list[dict[str, Any]],
     follow_up: list[str],
+    parameter_specs: list[dict[str, str]] | None = None,
     registry: _ToolRegistry,
     on_thought: ThoughtCallback | None,
     trace: TraceBuilder | None,
 ) -> RagActionResult:
+    specs = _normalize_parameter_specs(parameter_specs)
     state = _pending_state(
         phase=_PHASE_COLLECTING_PARAMETERS,
         known=known,
         missing=missing,
         procedure=procedure,
         follow_up=follow_up,
+        parameter_specs=specs,
         article_id=None,
         article_text=None,
         original_request=None,
@@ -468,6 +499,7 @@ def _next_result(
         known=known,
         procedure=procedure,
         follow_up=follow_up,
+        parameter_specs=specs,
         registry=registry,
         on_thought=on_thought,
         trace=trace,
@@ -482,10 +514,12 @@ def _execute_procedure(
     known: list[dict[str, str]],
     procedure: list[dict[str, Any]],
     follow_up: list[str],
+    parameter_specs: list[dict[str, str]] | None = None,
     registry: _ToolRegistry,
     on_thought: ThoughtCallback | None,
     trace: TraceBuilder | None,
 ) -> RagActionResult:
+    known = coerce_known_parameters(known, parameter_specs)
     accumulated: dict[str, Any] = {
         "parameters": known,
         "derived": {},
@@ -519,14 +553,9 @@ def _execute_procedure(
     if not registry.invokers:
         log.warning("RAG action execution has no MCP tools available")
         return RagActionResult(
-            response=_explain_error(
-                user_message,
-                llm=llm,
-                dialogue=dialogue,
-                step={"step": 1, "detail": "Procedure execution"},
-                failure=(
-                    "No operations tools are available right now to run this procedure."
-                ),
+            response=(
+                "The procedure could not start because no operations tools are "
+                "available right now."
             ),
             pending=None,
             action="reply",
@@ -554,7 +583,55 @@ def _execute_procedure(
         if thought and on_thought:
             on_thought(thought)
 
+        if action == "request_information" and domain == "AAP":
+            recovered = recover_aap_launch_decision(
+                step,
+                accumulated=accumulated,
+                known_parameters=known_parameters_as_map(accumulated["parameters"]),
+                parameter_specs=parameter_specs,
+                procedure=procedure,
+            )
+            if recovered is not None:
+                action = str(recovered.get("action") or "").strip()
+                arguments = recovered.get("arguments") or {}
+                domain = str(recovered.get("domain") or "AAP").upper()
+                thought = str(recovered.get("thought") or thought).strip()
+                if thought and on_thought:
+                    on_thought(thought)
+
         parallel_group = domain if domain in {"OPENSHIFT", "AAP", "ITSM"} else None
+
+        if (
+            action in LAUNCH_TOOLS_WITH_EXTRA_VARS
+            and should_skip_duplicate_launch(action, accumulated, arguments=arguments)
+        ):
+            skip_summary = "Workflow already launched in a previous step."
+            accumulated["steps_log"].append(
+                {
+                    "step": step_num,
+                    "detail": detail,
+                    "tool": action,
+                    "ok": True,
+                    "skipped": True,
+                    "domain": domain,
+                    "result_summary": skip_summary,
+                }
+            )
+            if trace:
+                trace.add(
+                    "step",
+                    f"Step {step_num} · skipped (duplicate launch)",
+                    status="skipped",
+                    detail={
+                        "step": step_num,
+                        "detail": detail,
+                        "domain": domain,
+                        "tool": action,
+                        "summary": skip_summary,
+                    },
+                    parallel_group=parallel_group,
+                )
+            continue
 
         if action in {"", "skip", "reply", "unsupported", "out_of_scope"}:
             accumulated["steps_log"].append(
@@ -622,6 +699,31 @@ def _execute_procedure(
                 domain=domain,
             )
 
+        if action in LAUNCH_TOOLS_WITH_EXTRA_VARS:
+            arguments = inject_trusted_derived_into_launch_args(
+                arguments,
+                accumulated["derived"],
+                known_parameters=known_parameters_as_map(accumulated["parameters"]),
+                parameter_specs=parameter_specs,
+                procedure=procedure,
+            )
+            ref_error = validate_launch_references(arguments, accumulated["derived"])
+            if ref_error:
+                return _abort_procedure(
+                    user_message,
+                    llm=llm,
+                    dialogue=dialogue,
+                    step=step,
+                    failure=ref_error,
+                    accumulated=accumulated,
+                    step_num=step_num,
+                    detail=detail,
+                    tool=action,
+                    on_thought=on_thought,
+                    trace=trace,
+                    domain=domain,
+                )
+
         if on_thought:
             on_thought(f"Calling tool “{action}”…")
         try:
@@ -643,8 +745,16 @@ def _execute_procedure(
                 domain=domain,
             )
 
-        if _result_is_error(result):
-            failure = _format_result(result)
+        if _result_is_error(result) or (
+            action in LAUNCH_TOOLS_WITH_EXTRA_VARS
+            and launch_result_is_failure(action, result)
+        ):
+            failure = (
+                format_launch_failure(result)
+                if action in LAUNCH_TOOLS_WITH_EXTRA_VARS
+                and launch_result_is_failure(action, result)
+                else _format_result(result)
+            )
             log.warning(
                 "RAG action tool returned error action=%s step=%s",
                 action,
@@ -665,12 +775,8 @@ def _execute_procedure(
                 domain=domain,
             )
 
-        derived = _merge_derived_from_result(
-            result,
-            llm=llm,
-            existing=accumulated["derived"],
-        )
-        accumulated["derived"] = derived
+        derived = extract_derived_from_tool_result(action, result)
+        accumulated["derived"] = merge_derived(accumulated["derived"], derived)
         result_summary = _format_result(result)[:500]
         accumulated["steps_log"].append(
             {
@@ -680,6 +786,7 @@ def _execute_procedure(
                 "ok": True,
                 "domain": domain,
                 "arguments": arguments,
+                "result": result,
                 "result_summary": result_summary,
             }
         )
@@ -842,8 +949,10 @@ def _decide_step(
         "instruction": (
             "Execute this procedure step now using exactly one available tool when "
             "needed. Prefer values from accumulated_state. Do not invent identifiers. "
-            "If no tool is required, return action reply. If a required argument is "
-            "still missing from the state, return request_information."
+            "If a workflow or job was already launched in completed_steps, do not launch "
+            "again; return action skip. If no tool is required, return action reply. "
+            "If a required argument is still missing from the state, return "
+            "request_information."
         ),
     }
     messages = [
@@ -905,33 +1014,11 @@ def _merge_derived_from_result(
     *,
     llm: LLMClient,
     existing: dict[str, Any],
+    tool_name: str = "",
 ) -> dict[str, Any]:
-    merged = dict(existing) if isinstance(existing, dict) else {}
-    observation = _format_result(result)
-    if len(observation) > _MAX_RESULT_CHARS:
-        observation = observation[:_MAX_RESULT_CHARS] + "\n[truncated]"
-    messages = [
-        {"role": "system", "content": build_rag_action_merge_prompt()},
-        {
-            "role": "user",
-            "content": (
-                f"Existing derived state:\n"
-                f"{json.dumps(merged, ensure_ascii=False, default=str)}\n\n"
-                f"Tool result:\n{observation}"
-            ),
-        },
-    ]
-    raw = llm.chat(messages).strip()
-    data = _parse_json_object(raw)
-    derived = data.get("derived") if isinstance(data.get("derived"), dict) else {}
-    for key, value in derived.items():
-        text_key = str(key).strip()
-        if not text_key or value is None:
-            continue
-        text_value = str(value).strip()
-        if text_value:
-            merged[text_key] = text_value
-    return merged
+    del llm
+    derived = extract_derived_from_tool_result(tool_name, result)
+    return merge_derived(existing, derived)
 
 
 def _summarize(
@@ -942,24 +1029,8 @@ def _summarize(
     accumulated: dict[str, Any],
     follow_up: list[str],
 ) -> str:
-    payload = {
-        "user_request": user_message,
-        "parameters": accumulated.get("parameters") or [],
-        "derived": accumulated.get("derived") or {},
-        "steps_log": accumulated.get("steps_log") or [],
-        "follow_up": follow_up,
-    }
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": build_rag_action_summary_prompt()},
-    ]
-    messages.extend(_dialogue_as_str(dialogue or []))
-    messages.append(
-        {
-            "role": "user",
-            "content": json.dumps(payload, ensure_ascii=False, default=str),
-        }
-    )
-    return llm.chat(messages).strip()
+    del user_message, llm, dialogue
+    return render_procedure_summary(accumulated, follow_up)
 
 
 def _abort_procedure(
@@ -1009,12 +1080,11 @@ def _abort_procedure(
     if on_thought:
         on_thought("A step failed; stopping the procedure…")
     return RagActionResult(
-        response=_explain_error(
-            user_message,
-            llm=llm,
-            dialogue=dialogue,
-            step=step,
+        response=render_procedure_error(
+            step_num=step_num,
+            detail=detail,
             failure=failure,
+            accumulated=accumulated,
         ),
         pending=None,
         action="reply",
@@ -1173,6 +1243,7 @@ def _pending_state(
     missing: list[dict[str, str]] | None = None,
     procedure: list[dict[str, Any]] | None = None,
     follow_up: list[str] | None = None,
+    parameter_specs: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     state: dict[str, Any] = {
         "category": "RAG",
@@ -1181,6 +1252,7 @@ def _pending_state(
         "missing_parameters": missing or [],
         "procedure": procedure or [],
         "follow_up": follow_up or [],
+        "parameter_specs": parameter_specs or [],
     }
     if phase:
         state["phase"] = phase
@@ -1359,6 +1431,24 @@ def _normalize_missing(
             entry["detail"] = detail
         out.append(entry)
         seen.add(key)
+    return out
+
+
+def _normalize_parameter_specs(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        detail = str(item.get("detail") or "").strip()
+        entry = {"name": name}
+        if detail:
+            entry["detail"] = detail
+        out.append(entry)
     return out
 
 
