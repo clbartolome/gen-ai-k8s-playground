@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from aap_mcp import (
@@ -7,6 +8,10 @@ from aap_mcp import (
     launch_template_id,
     quoted_name_from_step,
 )
+
+
+def _extra_vars_json(values: dict[str, str]) -> str:
+    return json.dumps(values, ensure_ascii=False, separators=(",", ":"))
 
 
 class InjectThreadIdTests(unittest.TestCase):
@@ -21,9 +26,10 @@ class InjectThreadIdTests(unittest.TestCase):
             thread_id="thread-abc",
         )
         self.assertEqual(
-            result["request_body"]["extra_vars"],
-            {"foo": "bar", "thread_id": "thread-abc"},
+            result["requestBody"]["extra_vars"],
+            _extra_vars_json({"foo": "bar", "thread_id": "thread-abc"}),
         )
+        self.assertNotIn("request_body", result)
         self.assertNotIn("thread_id", args["request_body"]["extra_vars"])
 
     def test_merges_into_request_body_camel_case(self) -> None:
@@ -43,11 +49,13 @@ class InjectThreadIdTests(unittest.TestCase):
         )
         self.assertEqual(
             result["requestBody"]["extra_vars"],
-            {
-                "vm_name": "rafa-01",
-                "cpus": "2",
-                "thread_id": "60a3ed47-808f-4484-a09e-99b7a62ed1bb",
-            },
+            _extra_vars_json(
+                {
+                    "vm_name": "rafa-01",
+                    "cpus": "2",
+                    "thread_id": "60a3ed47-808f-4484-a09e-99b7a62ed1bb",
+                }
+            ),
         )
         self.assertNotIn("request_body", result)
 
@@ -60,7 +68,11 @@ class InjectThreadIdTests(unittest.TestCase):
             tool_name="job_templates_launch_create",
             thread_id="thread-abc",
         )
-        self.assertEqual(result["request_body"]["extra_vars"]["thread_id"], "custom")
+        self.assertEqual(
+            json.loads(result["requestBody"]["extra_vars"])["thread_id"],
+            "custom",
+        )
+        self.assertNotIn("request_body", result)
 
     def test_creates_request_body_for_launch_tools(self) -> None:
         result = inject_thread_id_into_arguments(
@@ -72,7 +84,9 @@ class InjectThreadIdTests(unittest.TestCase):
             result,
             {
                 "id": "99",
-                "request_body": {"extra_vars": {"thread_id": "thread-abc"}},
+                "requestBody": {
+                    "extra_vars": _extra_vars_json({"thread_id": "thread-abc"}),
+                },
             },
         )
 
@@ -106,9 +120,12 @@ class InjectThreadIdTests(unittest.TestCase):
             thread_id="thread-abc",
         )
         self.assertEqual(
-            result["request_body"]["extra_vars"],
-            {"cpus": "2", "memory_gb": "4.0", "thread_id": "thread-abc"},
+            result["requestBody"]["extra_vars"],
+            _extra_vars_json(
+                {"cpus": "2", "memory_gb": "4.0", "thread_id": "thread-abc"}
+            ),
         )
+        self.assertNotIn("request_body", result)
 
     def test_stringifies_extra_vars_without_thread_id(self) -> None:
         result = inject_thread_id_into_arguments(
@@ -116,7 +133,30 @@ class InjectThreadIdTests(unittest.TestCase):
             tool_name="workflow_job_templates_launch_create",
             thread_id=None,
         )
-        self.assertEqual(result["request_body"]["extra_vars"], {"cpus": "2"})
+        self.assertEqual(
+            result["requestBody"]["extra_vars"],
+            _extra_vars_json({"cpus": "2"}),
+        )
+        self.assertNotIn("request_body", result)
+
+    def test_accepts_extra_vars_as_json_string(self) -> None:
+        result = inject_thread_id_into_arguments(
+            {
+                "id": "113",
+                "request_body": {
+                    "extra_vars": _extra_vars_json(
+                        {"vm_name": "rafa-01", "cpus": "1"}
+                    ),
+                },
+            },
+            tool_name="workflow_job_templates_launch_create",
+            thread_id="thread-abc",
+        )
+        self.assertEqual(
+            json.loads(result["requestBody"]["extra_vars"]),
+            {"vm_name": "rafa-01", "cpus": "1", "thread_id": "thread-abc"},
+        )
+        self.assertNotIn("request_body", result)
 
     def test_folds_top_level_procedure_fields_into_extra_vars(self) -> None:
         result = inject_thread_id_into_arguments(
@@ -132,7 +172,8 @@ class InjectThreadIdTests(unittest.TestCase):
             tool_name="workflow_job_templates_launch_create",
             thread_id="thread-abc",
         )
-        extra = result["request_body"]["extra_vars"]
+        extra = json.loads(result["requestBody"]["extra_vars"])
+        self.assertNotIn("request_body", result)
         self.assertEqual(extra["vm_name"], "rafa-01")
         self.assertEqual(extra["cpus"], "1")
         self.assertEqual(extra["itsm_change_ref"], "CHG-15")

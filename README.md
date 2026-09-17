@@ -29,6 +29,7 @@ The agent needs an LLM endpoint and one or more MCP servers. Only set the MCPs y
 | `LLM_MODEL` | Model name | — |
 | `LLM_TIMEOUT` | Request timeout (seconds) | `120` |
 | `LLM_MAX_TOKENS` | Max tokens per completion | `1024` |
+| `LLM_TEMPERATURE` | Sampling temperature (`0`–`2`) | model default |
 
 **MCP servers** (set URL + token for each server you enable)
 

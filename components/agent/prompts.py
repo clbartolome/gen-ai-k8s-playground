@@ -317,7 +317,8 @@ If nothing useful is present, return {"derived": {}}.
 # Rules
 - Prefer ids, names, statuses, and references needed by later steps.
 - If this result created an ITSM request/change, set itsm_service_request_ref and itsm_change_ref when those ids are present.
-- If this result listed or searched templates, extract the matching template id and name. Do not extract last_job, historical job ids, or failed-job ids from a list/search result.
+- If this result listed or searched resources, pick only an item whose name/title matches the requested name exactly (character for character). Never use partial, similar, or closest matches. If there is no exact match, do not invent an id.
+- If this result listed or searched templates, extract the matching template id and name only when the name matches exactly. Do not extract last_job, historical job ids, or failed-job ids from a list/search result.
 - If this result launched a job, extract the new job id and status.
 - Keys must be stable and reusable (template_id, job_id, itsm_change_ref, itsm_service_request_ref).
 """
@@ -331,13 +332,14 @@ Execute ONLY current_step with exactly one tool from allowed_tool_names.
 1. current_step is the task. Follow it even if user_request does not mention the product (for example a workflow).
 2. action must be copied exactly from allowed_tool_names, or request_information. Never invent a name from the step title (wrong: Launch-ITSM-Service-Request, Deploy-Generic-Application-Stack).
 3. Search, list, or find → a list/search tool from the list. Do not launch.
-4. Launch, create, or update → the matching catalog tool from the list. Do not skip and do not only list.
-5. Fill arguments from that tool's inputSchema. Do not put procedure field names at the top level unless the schema says so.
-6. Required tool fields that are not in the article (template id, record id) must come from accumulated_state.derived or prior step results. Do not invent them and do not omit them if they are already in derived.
-7. Prefer values from accumulated_state.parameters and accumulated_state.derived. Do not invent ids.
-8. extra_vars values must be strings. For AAP launch, top-level arguments are only id and request_body; procedure fields go in request_body.extra_vars.
-9. If a required argument is still missing after accumulated_state, return request_information.
-10. Do not return action reply or skip when a catalog tool can perform the step.
+4. When a step names a workflow, template, namespace, or other resource, choose only a result whose name matches that value exactly. Never pick a partial or similar name.
+5. Launch, create, or update → the matching catalog tool from the list. Do not skip and do not only list.
+6. Fill arguments from that tool's inputSchema. Do not put procedure field names at the top level unless the schema says so.
+7. Required tool fields that are not in the article (template id, record id) must come from accumulated_state.derived or prior step results. Do not invent them and do not omit them if they are already in derived.
+8. Prefer values from accumulated_state.parameters and accumulated_state.derived. Do not invent ids.
+9. extra_vars values must be strings. For AAP launch, top-level arguments are only id and requestBody; procedure fields go in requestBody.extra_vars.
+10. If a required argument is still missing after accumulated_state, return request_information.
+11. Do not return action reply or skip when a catalog tool can perform the step.
 
 # Output
 Return exactly one JSON object and nothing else (no Markdown, no preamble):
@@ -487,6 +489,7 @@ Return exactly one JSON object and nothing else (no Markdown fences):
 - `action` must be an exact tool name from the catalog, `request_information`, or `reply`.
 - Fill `arguments` exactly per that tool's inputSchema. Include all required args.
 - Do not invent identifiers, namespaces, ticket IDs, template names, or other values.
+- When selecting from list/search results, choose only an item whose name matches exactly. Never use partial or similar names.
 - Preserve user-provided values exactly.
 - Select only one action.
 
@@ -536,7 +539,8 @@ def build_openshift_prompt(tools: list[dict[str, Any]]) -> str:
         domain_rules=(
             "Help with cluster state and OpenShift/Kubernetes operations using only "
             "the tools below. Prefer the most specific tool. Never answer live cluster "
-            "state from memory."
+            "state from memory. When a list/search result must be narrowed to one "
+            "namespace, project, or resource, pick only an exact name match."
         ),
         tools=tools,
         max_tool_chars=10_000,
@@ -552,13 +556,15 @@ def build_aap_prompt(tools: list[dict[str, Any]]) -> str:
             "mentions a workflow (workflow job template, workflow job). Otherwise prefer "
             "job_templates_* tools. If the task is to search or find a template, use the "
             "list tool; do not launch. If the task is to launch or run a template, use "
-            "the launch tool; do not only list. Never invent template or job identifiers. "
+            "the launch tool; do not only list. When choosing from list/search results, "
+            "pick only a workflow or job template whose name matches exactly. "
+            "Never invent template or job identifiers. "
             "Never answer live AAP state from memory. "
             "Launch tools require top-level `id` (the template id from the previous "
             "list/search step, in accumulated_state.derived.template_id). The knowledge "
             "base will not include that id; still pass it because the tool requires it. "
-            "Put article parameters only in request_body.extra_vars, never at the top "
-            "level. Example: {'id': '123456', 'request_body': "
+            "Put article parameters only in requestBody.extra_vars, never at the top "
+            "level. Example: {'id': '123456', 'requestBody': "
             "{'extra_vars': {'vm_name': 'rafa-01', 'cpus': '1'}}}. "
             "When launching, if itsm_change_ref or itsm_service_request_ref is mentioned, "
             "put both in extra_vars. Map those from accumulated ITSM ids when needed. "

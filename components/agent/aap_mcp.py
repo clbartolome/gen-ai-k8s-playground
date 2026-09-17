@@ -6,7 +6,6 @@ import contextvars
 import copy
 import json
 import logging
-import re
 import urllib.error
 import urllib.request
 from typing import Any
@@ -14,6 +13,7 @@ from typing import Any
 from config import Settings
 from http_util import ssl_context_for
 from logutil import mask_secret
+from search_match import extract_item_id_by_exact_name, quoted_name_from_step
 
 log = logging.getLogger("agent.aap_mcp")
 
@@ -30,7 +30,8 @@ LIST_TEMPLATE_TOOLS = frozenset(
     }
 )
 
-_REQUEST_BODY_KEYS = ("request_body", "requestBody")
+REQUEST_BODY_KEY = "requestBody"
+_REQUEST_BODY_KEYS = (REQUEST_BODY_KEY, "request_body")
 _TEMPLATE_ID_KEYS = (
     "template_id",
     "workflow_job_template_id",
@@ -61,20 +62,33 @@ def inject_thread_id_into_arguments(
         args = _fold_launch_extra_vars(args)
 
     located = _find_request_body(args)
+    serialize_extra_vars = tool_name in LAUNCH_TOOLS_WITH_EXTRA_VARS
     if located is not None:
         _, body = located
-        body["extra_vars"] = _prepare_extra_vars(body.get("extra_vars"), thread_id)
+        body["extra_vars"] = _prepare_extra_vars(
+            body.get("extra_vars"),
+            thread_id,
+            serialize=serialize_extra_vars,
+        )
+        if serialize_extra_vars:
+            _ensure_request_body_key(args)
         return args
 
     if "extra_vars" in args:
-        args["extra_vars"] = _prepare_extra_vars(args.get("extra_vars"), thread_id)
+        args["extra_vars"] = _prepare_extra_vars(
+            args.get("extra_vars"),
+            thread_id,
+            serialize=serialize_extra_vars,
+        )
         return args
 
-    if thread_id and tool_name in LAUNCH_TOOLS_WITH_EXTRA_VARS:
-        args["request_body"] = {
-            "extra_vars": _prepare_extra_vars(None, thread_id),
+    if thread_id and serialize_extra_vars:
+        args[REQUEST_BODY_KEY] = {
+            "extra_vars": _prepare_extra_vars(None, thread_id, serialize=True),
         }
 
+    if serialize_extra_vars:
+        _ensure_request_body_key(args)
     return args
 
 
@@ -107,34 +121,8 @@ def launch_template_id(arguments: dict[str, Any] | None) -> str:
 
 
 def extract_template_id(result: Any, template_name: str | None = None) -> str:
-    """Pick a template id from a list/search result, matching name when given."""
-    wanted = (template_name or "").strip().casefold()
-    matches: list[str] = []
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            node_name = str(node.get("name") or node.get("title") or "").strip()
-            node_id = node.get("id") if node.get("id") is not None else node.get("pk")
-            if node_id is not None and node_name:
-                if not wanted or node_name.casefold() == wanted:
-                    matches.append(str(node_id).strip())
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(result)
-    return matches[0] if matches else ""
-
-
-def quoted_name_from_step(step_detail: str | None) -> str:
-    if not step_detail:
-        return ""
-    match = re.search(r'"([^"]+)"|“([^”]+)”', step_detail)
-    if not match:
-        return ""
-    return (match.group(1) or match.group(2) or "").strip()
+    """Pick a template id from a list/search result by exact name match."""
+    return extract_item_id_by_exact_name(result, template_name)
 
 
 def _fold_launch_extra_vars(args: dict[str, Any]) -> dict[str, Any]:
@@ -142,10 +130,9 @@ def _fold_launch_extra_vars(args: dict[str, Any]) -> dict[str, Any]:
     if "extra_vars" in args:
         extra.update(_stringify_extra_vars(args.pop("extra_vars")))
     located = _find_request_body(args)
-    body_key = "request_body"
     body: dict[str, Any] = {}
     if located is not None:
-        body_key, found = located
+        _, found = located
         extra.update(_stringify_extra_vars(found.get("extra_vars")))
         body = {key: value for key, value in found.items() if key != "extra_vars"}
     kept: dict[str, Any] = {}
@@ -159,7 +146,7 @@ def _fold_launch_extra_vars(args: dict[str, Any]) -> dict[str, Any]:
             continue
         extra.setdefault(str(key), value)
     body["extra_vars"] = extra
-    kept[body_key] = body
+    kept[REQUEST_BODY_KEY] = body
     return kept
 
 
@@ -191,15 +178,43 @@ def _find_request_body(args: dict[str, Any]) -> tuple[str, dict[str, Any]] | Non
     return None
 
 
-def _prepare_extra_vars(extra_vars: Any, thread_id: str | None) -> dict[str, str]:
+def _ensure_request_body_key(args: dict[str, Any]) -> None:
+    """Normalize launch payloads to the camelCase key expected by AAP MCP."""
+    snake = args.pop("request_body", None)
+    if not isinstance(snake, dict):
+        return
+    camel = args.get(REQUEST_BODY_KEY)
+    if isinstance(camel, dict):
+        args[REQUEST_BODY_KEY] = {**snake, **camel}
+    else:
+        args[REQUEST_BODY_KEY] = snake
+
+
+def _prepare_extra_vars(
+    extra_vars: Any,
+    thread_id: str | None,
+    *,
+    serialize: bool = False,
+) -> dict[str, str] | str:
     merged = _stringify_extra_vars(extra_vars)
     if thread_id:
         merged.setdefault("thread_id", thread_id)
+    if serialize:
+        return json.dumps(merged, ensure_ascii=False, separators=(",", ":"))
     return merged
 
 
 def _stringify_extra_vars(extra_vars: Any) -> dict[str, str]:
-    source = extra_vars if isinstance(extra_vars, dict) else {}
+    if isinstance(extra_vars, str):
+        try:
+            parsed = json.loads(extra_vars)
+        except json.JSONDecodeError:
+            parsed = {}
+        source = parsed if isinstance(parsed, dict) else {}
+    elif isinstance(extra_vars, dict):
+        source = extra_vars
+    else:
+        source = {}
     out: dict[str, str] = {}
     for key, value in source.items():
         name = str(key)

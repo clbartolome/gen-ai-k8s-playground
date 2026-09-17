@@ -30,19 +30,23 @@ class LLMClient:
 
         endpoint = self.endpoint
         log.debug(
-            "LLM POST %s model=%s max_tokens=%s",
+            "LLM POST %s model=%s max_tokens=%s temperature=%s",
             endpoint,
             self._settings.llm_model,
             self._settings.llm_max_tokens,
+            self._settings.llm_temperature,
         )
+        body: dict = {
+            "model": self._settings.llm_model,
+            "messages": messages,
+            "max_tokens": self._settings.llm_max_tokens,
+        }
+        if self._settings.llm_temperature is not None:
+            body["temperature"] = self._settings.llm_temperature
         data = request_json(
             "POST",
             endpoint,
-            body={
-                "model": self._settings.llm_model,
-                "messages": messages,
-                "max_tokens": self._settings.llm_max_tokens,
-            },
+            body=body,
             headers={"Authorization": f"Bearer {self._settings.llm_api_key}"},
             timeout=self._settings.llm_timeout,
         )

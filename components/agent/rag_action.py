@@ -23,9 +23,12 @@ from aap_mcp import (
     LAUNCH_TOOLS_WITH_EXTRA_VARS,
     LIST_TEMPLATE_TOOLS,
     apply_launch_template_id,
-    extract_template_id,
     launch_template_id,
+)
+from search_match import (
+    extract_item_id_by_exact_name,
     quoted_name_from_step,
+    step_requires_exact_search_match,
 )
 from config import RAG_MCP_TOOLS
 from itsm_mcp import ItsmMcpClient, prepare_create_request_arguments
@@ -724,20 +727,45 @@ def _execute_procedure(
                 domain=domain,
             )
 
-        derived = _merge_derived_from_result(
-            result,
-            llm=llm,
-            existing=accumulated["derived"],
-            tool=action,
-            step=step,
-        )
-        if action in LIST_TEMPLATE_TOOLS:
-            found_id = extract_template_id(
-                result,
-                quoted_name_from_step(detail),
-            )
-            if found_id:
+        target_name = quoted_name_from_step(detail)
+        if step_requires_exact_search_match(detail, action):
+            found_id = extract_item_id_by_exact_name(result, target_name)
+            if not found_id:
+                failure = (
+                    f"Step {step_num}: no exact match for \"{target_name}\" in the "
+                    "search results. The name must match exactly."
+                )
+                return _abort_procedure(
+                    user_message,
+                    llm=llm,
+                    dialogue=dialogue,
+                    step=step,
+                    failure=failure,
+                    accumulated=accumulated,
+                    step_num=step_num,
+                    detail=detail,
+                    tool=action,
+                    on_thought=on_thought,
+                    trace=trace,
+                    domain=domain,
+                )
+            derived = dict(accumulated.get("derived") or {})
+            derived.setdefault("matched_name", target_name)
+            derived.setdefault("matched_id", found_id)
+            if action in LIST_TEMPLATE_TOOLS:
                 derived.setdefault("template_id", found_id)
+        else:
+            derived = _merge_derived_from_result(
+                result,
+                llm=llm,
+                existing=accumulated["derived"],
+                tool=action,
+                step=step,
+            )
+            if action in LIST_TEMPLATE_TOOLS and target_name:
+                found_id = extract_item_id_by_exact_name(result, target_name)
+                if found_id:
+                    derived.setdefault("template_id", found_id)
         accumulated["derived"] = derived
         result_summary = _format_result(result)[:500]
         accumulated["steps_log"].append(
